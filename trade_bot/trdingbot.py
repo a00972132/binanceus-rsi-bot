@@ -71,12 +71,14 @@ def fetch_balance():
     """Fetch account balance with retries."""
     for _ in range(3):
         try:
-            return exchange.fetch_balance()
+            balance = exchange.fetch_balance()
+            if balance:
+                return balance
         except Exception as e:
             logging.warning(f"Error fetching balance, retrying: {e}")
             time.sleep(2)
     logging.error("Failed to fetch balance after retries")
-    return None
+    return {"total": {"USDT": 0}, "free": {"ETH": 0, "USDT": 0}}  # Return a default safe structure
 
 def calculate_rsi(df):
     """Calculate RSI (Relative Strength Index)"""
@@ -94,12 +96,12 @@ def calculate_sma(df):
 def check_profit_loss():
     """Check if profit or loss exceeds threshold and stop the bot if needed."""
     global initial_balance
-    current_balance = fetch_balance()
-    if current_balance is None:
+    balance = fetch_balance()
+    if not balance:
         return
     
-    total_balance = current_balance['total'].get('USDT', 0)
-    balance_change = total_balance / initial_balance
+    total_balance = balance['total'].get('USDT', 0)
+    balance_change = total_balance / initial_balance if initial_balance else 1
     
     if balance_change <= STOP_LOSS_THRESHOLD:
         logging.info("🚨 Loss threshold exceeded. Stopping bot.")
@@ -112,7 +114,7 @@ def place_order(side):
     """Place a market order (buy/sell) with balance check"""
     global last_buy_price, cached_balance, cached_price
     balance = fetch_balance()
-    if balance is None:
+    if not balance:
         logging.error("Cannot fetch balance, skipping trade.")
         return None
     eth_balance = balance['free'].get('ETH', 0)
@@ -142,7 +144,12 @@ def run_bot():
     """Main trading loop"""
     global last_buy_price, cached_balance, cached_price, initial_balance
 
-    initial_balance = fetch_balance()['total'].get('USDT', 0)
+    balance = fetch_balance()
+    if balance:
+        initial_balance = balance['total'].get('USDT', 0)
+    else:
+        logging.error("Failed to fetch initial balance. Exiting.")
+        exit()
     
     while True:
         df = fetch_data()
