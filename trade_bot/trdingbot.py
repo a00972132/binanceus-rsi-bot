@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 import os
 
 # Load environment variables
-load_dotenv()
+dotenv_path = "creds path"
+load_dotenv(dotenv_path=dotenv_path)
 
 # Configure Binance API Keys (Use environment variables for security)
 API_KEY = os.getenv("BINANCE_API_KEY")
