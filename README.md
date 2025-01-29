@@ -42,8 +42,8 @@ python trading_bot.py
 ```
 
 ---
-## ⚡ Customization Guide
-### 🔹 Adjusting Trading Parameters
+## Customization Guide
+### Adjusting Trading Parameters
 Modify **RSI and SMA settings**:
 ```python
 RSI_PERIOD = 14
@@ -52,7 +52,7 @@ OVERBOUGHT = 70
 OVERSOLD = 30
 ```
 
-### 🔹 Changing Risk Management Rules
+### Changing Risk Management Rules
 Modify **stop-loss and take-profit settings**:
 ```python
 STOP_LOSS_THRESHOLD = 0.80  # Stops bot at 20% loss
@@ -60,7 +60,7 @@ TAKE_PROFIT_THRESHOLD = 1.20  # Stops bot at 20% profit
 ```
 
 ---
-## 🛠 Troubleshooting & Debugging
+## Troubleshooting & Debugging
 - **Check logs**: Review `trading_bot.log` for issues.
 - **Verify API keys**: Ensure keys are **correct and activated**.
 - **Update dependencies**:
