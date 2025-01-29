@@ -41,6 +41,7 @@ The **Binance RSI Trading Bot** is an automated crypto trading system for **ETH/
 ✅ **Risk Management**:
    - **Stop-Loss**: Stops trading if **balance drops by 20%**.
    - **Take-Profit**: Stops trading if **profit exceeds 20%**.
+
 ✅ **Logging & Debugging**:
    - **Logs all trade executions, API errors, and price data**.
 
