@@ -6,7 +6,7 @@
 The **Binance RSI Trading Bot** is an automated crypto trading system for **ETH/USDT** using **Relative Strength Index (RSI) and Simple Moving Average (SMA)**. It integrates **risk management features** like **stop-loss and take-profit**, ensuring a safer trading experience.
 
 ---
-**How the Bot Works**
+## How the Bot works
 
 🔹 **RSI Check Frequency**
 
