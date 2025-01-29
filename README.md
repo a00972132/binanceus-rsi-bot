@@ -1,12 +1,12 @@
-# 📌 Binance RSI Trading Bot - Wiki
+# Binance RSI Trading Bot - Wiki
 
 ![Binance Trading](https://img.shields.io/badge/Binance-Trading-yellow.svg) ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 
-## 🚀 Overview
+## Overview
 The **Binance RSI Trading Bot** is an automated crypto trading system for **ETH/USDT** using **Relative Strength Index (RSI) and Simple Moving Average (SMA)**. It integrates **risk management features** like **stop-loss and take-profit**, ensuring a safer trading experience.
 
 ---
-## 🛠 Features
+## Features
 ✅ **Secure API Handling**: Uses environment variables to protect API credentials.  
 ✅ **Automated RSI-Based Trading**:
    - **Buys ETH** when **RSI < 30** and **price is above 200-SMA**.
@@ -21,7 +21,7 @@ The **Binance RSI Trading Bot** is an automated crypto trading system for **ETH/
    - **Logs all trade executions, API errors, and price data**.
 
 ---
-## ⚙️ Setup Instructions
+## Setup Instructions
 ### 1️⃣ Install Dependencies
 Ensure Python (3.8 or later) is installed, then run:
 ```bash
