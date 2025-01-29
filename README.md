@@ -7,16 +7,12 @@ The **Binance RSI Trading Bot** is an automated crypto trading system for **ETH/
 
 ---
 ## Features
-✅ **Secure API Handling**: Uses environment variables to protect API credentials.  
 ✅ **Automated RSI-Based Trading**:
    - **Buys ETH** when **RSI < 30** and **price is above 200-SMA**.
    - **Sells ETH** when **RSI > 70** and **price is below 200-SMA**.
 ✅ **Risk Management**:
    - **Stop-Loss**: Stops trading if **balance drops by 20%**.
    - **Take-Profit**: Stops trading if **profit exceeds 20%**.
-✅ **Optimized API Calls**:
-   - **Caching** reduces redundant Binance API requests.
-   - **Retry logic** ensures API stability.
 ✅ **Logging & Debugging**:
    - **Logs all trade executions, API errors, and price data**.
 
@@ -67,6 +63,5 @@ TAKE_PROFIT_THRESHOLD = 1.20  # Stops bot at 20% profit
 ```bash
 pip list --outdated
 ```
-- **Handling API rate limits**: Add **exponential backoff** if needed.
 
 
