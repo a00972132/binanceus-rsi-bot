@@ -16,19 +16,18 @@ The **Binance RSI Trading Bot** is an automated crypto trading system for **ETH/
 
 🔵 **Buy Conditions** (All must be true):
 
-- ✅ RSI < 30 (oversold).
-
-- ✅ Price > 200-SMA (uptrend confirmation).
-
-- ✅ No existing ETH holdings (eth_balance == 0).
+- ✅ RSI < 30 (oversold)
+- ✅ Price > 200-SMA (confirming an uptrend)
+- ✅ Trade size scales based on trend strength:
+      - Weak uptrend → Buy 0.01 ETH
+      - Moderate uptrend → Buy 0.02 ETH
+      - Strong uptrend → Buy 0.03 ETH
 
 🔴 **Sell Conditions** (All must be true):
 
-- ✅ RSI > 70 (overbought).
-
-- ✅ Price < 200-SMA (downtrend confirmation).
-
-- ✅ Holding ETH (eth_balance > 0).
+- ✅ RSI > 70 (overbought)
+- ✅ Price < 200-SMA (confirming a downtrend)
+- ✅ Holding ETH (eth_balance > 0)
 
 🔹 **Prevents Over-Trading**
 
