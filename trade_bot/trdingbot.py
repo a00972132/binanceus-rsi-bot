@@ -31,7 +31,7 @@ exchange = ccxt.binanceus({
 SYMBOL = 'ETH/USDT'
 TIMEFRAME = '5m'
 RSI_PERIOD = 14
-SMA_PERIOD = 200  # Simple Moving Average for trend confirmation
+SMA_PERIOD = 200
 OVERBOUGHT = 70
 OVERSOLD = 30
 STOP_LOSS_THRESHOLD = 0.80  # Stop bot if loss > 20%
@@ -45,7 +45,7 @@ initial_balance = None
 
 def fetch_data():
     """Fetch historical market data with retry logic"""
-    for _ in range(3):  # Retry up to 3 times
+    for _ in range(3):
         try:
             bars = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=max(RSI_PERIOD, SMA_PERIOD) + 1)
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -92,6 +92,23 @@ def calculate_rsi(df):
 def calculate_sma(df):
     """Calculate Simple Moving Average for trend confirmation"""
     return df['close'].rolling(window=SMA_PERIOD).mean().iloc[-1]
+
+def check_profit_loss():
+    """Check if profit or loss exceeds threshold and stop the bot if needed."""
+    global initial_balance
+    balance = fetch_balance()
+    if not balance:
+        return
+    
+    total_balance = balance['total'].get('USDT', 0)
+    balance_change = total_balance / initial_balance if initial_balance else 1
+    
+    if balance_change <= STOP_LOSS_THRESHOLD:
+        logging.info("🚨 Loss threshold exceeded. Stopping bot.")
+        exit()
+    elif balance_change >= TAKE_PROFIT_THRESHOLD:
+        logging.info("🎉 Profit threshold reached. Stopping bot.")
+        exit()
 
 def get_trade_size(price, sma):
     """Determine trade size dynamically based on trend strength."""
@@ -150,6 +167,7 @@ def run_bot():
         else:
             logging.info(f"⏳ No trade executed | RSI: {rsi} | Price: {current_price} | SMA: {sma}")
         
+        check_profit_loss()
         time.sleep(60)
 
 # Run the bot
