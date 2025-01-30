@@ -6,8 +6,7 @@ from dotenv import load_dotenv
 import os
 
 # Load environment variables
-dotenv_path = "creds path"
-load_dotenv(dotenv_path=dotenv_path)
+load_dotenv()
 
 # Configure Binance API Keys (Use environment variables for security)
 API_KEY = os.getenv("BINANCE_API_KEY")
@@ -34,7 +33,6 @@ RSI_PERIOD = 14
 SMA_PERIOD = 200  # Simple Moving Average for trend confirmation
 OVERBOUGHT = 70
 OVERSOLD = 30
-TRADE_AMOUNT = 0.01  # Reduced trade amount for testing
 STOP_LOSS_THRESHOLD = 0.80  # Stop bot if loss > 20%
 TAKE_PROFIT_THRESHOLD = 1.20  # Stop bot if profit > 20%
 
@@ -46,7 +44,7 @@ initial_balance = None
 
 def fetch_data():
     """Fetch historical market data with retry logic"""
-    for _ in range(3):  # Retry up to 3 times
+    for _ in range(3):  
         try:
             bars = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=max(RSI_PERIOD, SMA_PERIOD) + 1)
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -79,7 +77,7 @@ def fetch_balance():
             logging.warning(f"Error fetching balance, retrying: {e}")
             time.sleep(2)
     logging.error("Failed to fetch balance after retries")
-    return {"total": {"USDT": 0}, "free": {"ETH": 0, "USDT": 0}}  # Return a default safe structure
+    return {"total": {"USDT": 0}, "free": {"ETH": 0, "USDT": 0}}
 
 def calculate_rsi(df):
     """Calculate RSI (Relative Strength Index)"""
@@ -94,48 +92,21 @@ def calculate_sma(df):
     """Calculate Simple Moving Average for trend confirmation"""
     return df['close'].rolling(window=SMA_PERIOD).mean().iloc[-1]
 
-def check_profit_loss():
-    """Check if profit or loss exceeds threshold and stop the bot if needed."""
-    global initial_balance
-    balance = fetch_balance()
-    if not balance:
-        return
-    
-    total_balance = balance['total'].get('USDT', 0)
-    balance_change = total_balance / initial_balance if initial_balance else 1
-    
-    if balance_change <= STOP_LOSS_THRESHOLD:
-        logging.info("🚨 Loss threshold exceeded. Stopping bot.")
-        exit()
-    elif balance_change >= TAKE_PROFIT_THRESHOLD:
-        logging.info("🎉 Profit threshold reached. Stopping bot.")
-        exit()
+def get_trade_size(price, sma):
+    """Determine trade size dynamically based on trend strength."""
+    trend_strength = (price - sma) / sma
+    if trend_strength > 0.1:
+        return 0.03  # Strong uptrend
+    elif trend_strength > 0.05:
+        return 0.02  # Moderate uptrend
+    else:
+        return 0.01  # Weak uptrend
 
-def place_order(side):
-    """Place a market order (buy/sell) with balance check"""
-    global last_buy_price, cached_balance, cached_price
-    balance = fetch_balance()
-    if not balance:
-        logging.error("Cannot fetch balance, skipping trade.")
-        return None
-    eth_balance = balance['free'].get('ETH', 0)
-    usdt_balance = balance['free'].get('USDT', 0)
-    current_price = fetch_ticker_price()
-
-    if side == 'buy' and usdt_balance < TRADE_AMOUNT * current_price:
-        logging.warning("⚠️ Insufficient USDT balance for buy order.")
-        return None
-    if side == 'sell' and eth_balance < TRADE_AMOUNT:
-        logging.warning("⚠️ Insufficient ETH balance for sell order.")
-        return None
-    
+def place_order(side, trade_size):
+    """Place a market order (buy/sell) with dynamic trade size."""
     try:
-        order = exchange.create_market_order(SYMBOL, side, TRADE_AMOUNT)
-        logging.info(f"✅ Order placed: {side} {TRADE_AMOUNT} ETH")
-        if side == 'buy':
-            last_buy_price = fetch_ticker_price()
-        cached_balance = None
-        cached_price = None
+        order = exchange.create_market_order(SYMBOL, side, trade_size)
+        logging.info(f"✅ Order placed: {side} {trade_size} ETH")
         return order
     except Exception as e:
         logging.exception("Order failed")
@@ -161,20 +132,23 @@ def run_bot():
         rsi = calculate_rsi(df)
         sma = calculate_sma(df)
         current_price = fetch_ticker_price()
+        trade_size = get_trade_size(current_price, sma)
+        
         if current_price:
-            logging.info(f"📊 RSI: {rsi} | Price: {current_price} | SMA: {sma}")
+            logging.info(f"📊 RSI: {rsi} | Price: {current_price} | SMA: {sma} | Trade Size: {trade_size}")
         
         balance = fetch_balance()
         eth_balance = balance['free'].get('ETH', 0) if balance else 0
         
         if rsi < OVERSOLD and eth_balance == 0 and current_price > sma:
             logging.info("🔵 RSI Low & Above SMA – Buying ETH")
-            place_order('buy')
+            place_order('buy', trade_size)
         elif rsi > OVERBOUGHT and eth_balance > 0 and current_price < sma:
             logging.info("🔴 RSI High & Below SMA – Selling ETH")
-            place_order('sell')
+            place_order('sell', trade_size)
+        else:
+            logging.info(f"⏳ No trade executed | RSI: {rsi} | Price: {current_price} | SMA: {sma}")
         
-        check_profit_loss()
         time.sleep(60)
 
 # Run the bot
