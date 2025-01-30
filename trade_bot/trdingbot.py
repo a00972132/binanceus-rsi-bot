@@ -167,11 +167,22 @@ def run_bot():
         current_price = fetch_ticker_price()
         trade_size = get_trade_size(current_price, sma)
         
-        # Log only ETH and USDT balances
+        # Fetch and log only ETH and USDT balances
         balance = fetch_balance()
         eth_balance = balance['free'].get('ETH', 0) if balance else 0
         usdt_balance = balance['free'].get('USDT', 0) if balance else 0
-        logging.info(f"💰 ETH Balance: {eth_balance} | USDT Balance: {usdt_balance}")
+
+        logging.info(f"""
+        📊 Market Data:
+        - RSI: {rsi}
+        - Price: {current_price}
+        - SMA: {sma}
+        - Trade Size: {trade_size}
+        
+        💰 Account Balance:
+        - ETH: {eth_balance}
+        - USDT: {usdt_balance}
+        """)
 
         if rsi < OVERSOLD and current_price > sma:
             logging.info("🔵 RSI Low & Above SMA – Buying ETH")
@@ -179,6 +190,8 @@ def run_bot():
         elif rsi > OVERBOUGHT and eth_balance > 0 and current_price < sma:
             logging.info("🔴 RSI High & Below SMA – Selling ETH")
             place_order('sell', trade_size)
+        else:
+            logging.info("⏳ No trade executed this cycle.")
         
         check_profit_loss()
         time.sleep(60)
