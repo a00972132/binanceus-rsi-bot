@@ -45,7 +45,7 @@ initial_balance = None
 
 def fetch_data():
     """Fetch historical market data with retry logic"""
-    for _ in range(3):
+    for _ in range(3):  # Retry up to 3 times
         try:
             bars = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=max(RSI_PERIOD, SMA_PERIOD) + 1)
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
