@@ -18,6 +18,7 @@ The **Binance RSI Trading Bot** is an automated crypto trading system for **ETH/
 
 - ✅ RSI < 30 (oversold)
 - ✅ Price > 200-SMA (confirming an uptrend)
+- ✅ Cooldown period has passed (prevents rapid re-buys)
 - ✅ Trade size scales based on trend strength:
   
       🔹 Weak uptrend → Buy 0.01 ETH
@@ -29,14 +30,15 @@ The **Binance RSI Trading Bot** is an automated crypto trading system for **ETH/
 - 🔴 RSI > 70 (overbought)
 - 🔴 Price < 200-SMA (confirming a downtrend)
 - 🔴 Holding ETH (eth_balance > 0)
+- 🔴 Cooldown period has passed.
 
-**Prevents Over-Trading**
+🛠️ **Cooldown & Trade Frequency**
 
-- Won’t buy multiple times in a row.
-
-- Won’t sell unless a buy happened first.
-
-- Logs "No trade executed" if no trade is made.
+- Default cooldown is 5 minutes (MIN_TRADE_INTERVAL = 300).
+- Prevents rapid re-trading even if RSI stays below 30.
+- Prevents excessive buys when the market is volatile.
+- If RSI stays below 30 and other conditions match, the bot may trade every 5 minutes.
+- The 5-minute cooldown prevents excessive buys but doesn't block trading entirely.
 
 
 ✅ **Risk Management**:
