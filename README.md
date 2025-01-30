@@ -8,29 +8,29 @@ The **Binance RSI Trading Bot** is an automated crypto trading system for **ETH/
 ---
 ## How the Bot works
 
-🔹 **RSI Check Frequency**
+**RSI Check Frequency**
 
 - The bot checks RSI every minute (time.sleep(60)).
 
 - It uses 5-minute candlesticks (TIMEFRAME = '5m').
 
-🔵 **Buy Conditions** (All must be true):
+**Buy Conditions** (All must be true):
 
 - ✅ RSI < 30 (oversold)
 - ✅ Price > 200-SMA (confirming an uptrend)
 - ✅ Trade size scales based on trend strength:
   
-      🔹Weak uptrend → Buy 0.01 ETH
-      🔹Moderate uptrend → Buy 0.02 ETH
-      🔹Strong uptrend → Buy 0.03 ETH
+      🔹 Weak uptrend → Buy 0.01 ETH
+      🔹 Moderate uptrend → Buy 0.02 ETH
+      🔹 Strong uptrend → Buy 0.03 ETH
 
-🔴 **Sell Conditions** (All must be true):
+ **Sell Conditions** (All must be true):
 
-- ✅ RSI > 70 (overbought)
-- ✅ Price < 200-SMA (confirming a downtrend)
-- ✅ Holding ETH (eth_balance > 0)
+- 🔴 RSI > 70 (overbought)
+- 🔴 Price < 200-SMA (confirming a downtrend)
+- 🔴 Holding ETH (eth_balance > 0)
 
-🔹 **Prevents Over-Trading**
+**Prevents Over-Trading**
 
 - Won’t buy multiple times in a row.
 
