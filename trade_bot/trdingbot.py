@@ -13,6 +13,11 @@ load_dotenv(dotenv_path=dotenv_path)
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
 
+# Ensure API keys are loaded correctly
+if not API_KEY or not API_SECRET:
+    logging.error("API keys not found. Exiting.")
+    exit()
+
 # Configure logging
 logging.basicConfig(
     filename="trading_bot.log", 
@@ -36,16 +41,18 @@ OVERBOUGHT = 70
 OVERSOLD = 30
 STOP_LOSS_THRESHOLD = 0.80  # Stop bot if loss > 20%
 TAKE_PROFIT_THRESHOLD = 1.20  # Stop bot if profit > 20%
+MIN_TRADE_INTERVAL = 300  # 5-minute cooldown between trades
 
 # Track last trade details
 last_buy_price = None
 cached_balance = None
 cached_price = None
 initial_balance = None
+last_trade_time = 0  # Store last trade timestamp
 
 def fetch_data():
     """Fetch historical market data with retry logic"""
-    for _ in range(3):  # Retry up to 3 times
+    for _ in range(3):
         try:
             bars = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=max(RSI_PERIOD, SMA_PERIOD) + 1)
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -82,6 +89,9 @@ def fetch_balance():
 
 def calculate_rsi(df):
     """Calculate RSI (Relative Strength Index)"""
+    if df is None or df.empty:
+        logging.warning("No market data available. Skipping RSI calculation.")
+        return None
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
@@ -121,10 +131,15 @@ def get_trade_size(price, sma):
         return 0.01  # Weak uptrend
 
 def place_order(side, trade_size):
-    """Place a market order (buy/sell) with dynamic trade size."""
+    """Place a market order (buy/sell) with dynamic trade size and cooldown."""
+    global last_trade_time
+    if time.time() - last_trade_time < MIN_TRADE_INTERVAL:
+        logging.info("⏳ Skipping trade - Cooldown in effect.")
+        return None
     try:
         order = exchange.create_market_order(SYMBOL, side, trade_size)
         logging.info(f"✅ Order placed: {side} {trade_size} ETH")
+        last_trade_time = time.time()
         return order
     except Exception as e:
         logging.exception("Order failed")
@@ -152,8 +167,8 @@ def run_bot():
         current_price = fetch_ticker_price()
         trade_size = get_trade_size(current_price, sma)
         
-        if current_price:
-            logging.info(f"📊 RSI: {rsi} | Price: {current_price} | SMA: {sma} | Trade Size: {trade_size}")
+        logging.info(f"📊 RSI: {rsi} | Price: {current_price} | SMA: {sma} | Trade Size: {trade_size}")
+        logging.info(f"💰 Account Balance: {fetch_balance()['free']}")
         
         balance = fetch_balance()
         eth_balance = balance['free'].get('ETH', 0) if balance else 0
@@ -164,8 +179,6 @@ def run_bot():
         elif rsi > OVERBOUGHT and eth_balance > 0 and current_price < sma:
             logging.info("🔴 RSI High & Below SMA – Selling ETH")
             place_order('sell', trade_size)
-        else:
-            logging.info(f"⏳ No trade executed | RSI: {rsi} | Price: {current_price} | SMA: {sma}")
         
         check_profit_loss()
         time.sleep(60)
