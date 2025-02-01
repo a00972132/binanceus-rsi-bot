@@ -26,13 +26,14 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+# ✅ Fix for Binance Time Sync Issue
 exchange = ccxt.binanceus({
     'apiKey': API_KEY,
     'secret': API_SECRET,
     'options': {'adjustForTimeDifference': True},
 })
 
-Ensure time sync with Binance
+# Ensure time sync with Binance
 exchange.checkRequiredCredentials()
 exchange.load_markets()
 exchange.fetch_time()
@@ -141,22 +142,22 @@ def can_trade():
 
     return trade_count < MAX_TRADES_PER_HOUR
 
-def get_trade_size(price, reference_price):
-    """Dynamically adjust trade size based on price movement."""
+def get_trade_size(price, reference_price, rsi):
+    """Dynamically adjust trade size based on price movement & RSI strength."""
     price_change = (price - reference_price) / reference_price
 
-    if price_change < -0.10:  # Price dropped 10% → Buy more
-        return 0.03
-    elif price_change < -0.05:  # Price dropped 5% → Moderate buy
-        return 0.02
-    elif price_change < -0.02:  # Price dropped 2% → Small buy
+    if rsi < 30 and price_change < -0.02:  # Price dropped 2% & RSI low → Small Buy
         return 0.01
-    elif price_change > 0.15:  # Price increased 15% → Sell more
-        return 0.03
-    elif price_change > 0.10:  # Price increased 10% → Moderate sell
+    elif rsi < 25 and price_change < -0.05:  # Price dropped 5% & RSI very low → Moderate Buy
         return 0.02
-    elif price_change > 0.05:  # Price increased 5% → Small sell
+    elif rsi < 20 and price_change < -0.10:  # Price dropped 10% & RSI extreme → Large Buy
+        return 0.03
+    elif rsi > 70 and price_change > 0.05:  # Price up 5% & RSI high → Small Sell
         return 0.01
+    elif rsi > 75 and price_change > 0.10:  # Price up 10% & RSI very high → Moderate Sell
+        return 0.02
+    elif rsi > 80 and price_change > 0.15:  # Price up 15% & RSI extreme → Large Sell
+        return 0.03
     else:
         return 0.0  # No trade
 
@@ -197,7 +198,7 @@ def run_bot():
         sma = calculate_sma(df)
         current_price = fetch_ticker_price()
 
-        trade_size = get_trade_size(current_price, last_buy_price if last_buy_price else current_price)
+        trade_size = get_trade_size(current_price, last_buy_price if last_buy_price else current_price, rsi)
 
         if rsi < OVERSOLD and current_price > sma:
             place_order('buy', trade_size)
