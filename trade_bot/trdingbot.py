@@ -2,6 +2,7 @@ import ccxt
 import pandas as pd
 import time
 import logging
+import random
 from dotenv import load_dotenv
 import os
 
@@ -9,7 +10,7 @@ import os
 dotenv_path = "/Users/will/Desktop/Code/Tradingbot/binanceus_creds.env"
 load_dotenv(dotenv_path=dotenv_path)
 
-# Configure Binance API Keys (Use environment variables for security)
+# Configure Binance API Keys
 API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
 
@@ -28,13 +29,13 @@ logging.basicConfig(
 exchange = ccxt.binanceus({
     'apiKey': API_KEY,
     'secret': API_SECRET,
-    'options': {'adjustForTimeDifference': True},  # Auto adjust for time sync
+    'options': {'adjustForTimeDifference': True},
 })
 
-# ✅ Force time synchronization to Binance server
+Ensure time sync with Binance
 exchange.checkRequiredCredentials()
 exchange.load_markets()
-exchange.fetch_time()  # Fetches server time to prevent -1021 error
+exchange.fetch_time()
 
 # Trading parameters
 SYMBOL = 'ETH/USDT'
@@ -44,27 +45,32 @@ SMA_PERIOD = 200
 OVERBOUGHT = 70
 OVERSOLD = 30
 STOP_LOSS_THRESHOLD = 0.80  # Stop bot if loss > 20%
-TAKE_PROFIT_THRESHOLD = 1.20  # Stop bot if profit > 20%
+TAKE_PROFIT_THRESHOLD = 1.20  # Gradual profit-taking at 20%
 MIN_TRADE_INTERVAL = 300  # 5-minute cooldown between trades
+MAX_TRADES_PER_HOUR = 3  # Limit max trades per hour
 
 # Track last trade details
+last_trade_time = 0
+trade_count = 0
+last_trade_hour = time.strftime('%H')
 last_buy_price = None
-cached_balance = None
-cached_price = None
+last_sell_price = None
 initial_balance = None
-last_trade_time = 0  # Store last trade timestamp
 
 def fetch_data():
     """Fetch historical market data with retry logic"""
     for _ in range(3):
         try:
             bars = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=max(RSI_PERIOD, SMA_PERIOD) + 1)
+            if not bars:
+                logging.warning("⚠ No market data available. Skipping this cycle.")
+                return None
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             return df
         except Exception as e:
             logging.warning(f"Error fetching data, retrying: {e}")
             time.sleep(2)
-    logging.error("Failed to fetch data after retries")
+    logging.error("❌ Failed to fetch market data after retries")
     return None
 
 def fetch_ticker_price():
@@ -108,7 +114,7 @@ def calculate_sma(df):
     return df['close'].rolling(window=SMA_PERIOD).mean().iloc[-1]
 
 def check_profit_loss():
-    """Check if profit or loss exceeds threshold and stop the bot if needed."""
+    """Check if profit or loss exceeds threshold and take action accordingly."""
     global initial_balance
     balance = fetch_balance()
     if not balance:
@@ -121,29 +127,50 @@ def check_profit_loss():
         logging.info("🚨 Stop-Loss Triggered. Stopping bot.")
         exit()
     elif balance_change >= TAKE_PROFIT_THRESHOLD:
-        logging.info("🎉 Take-Profit Triggered. Stopping bot.")
-        exit()
+        logging.info("🎉 Profit threshold reached. Taking gradual profit.")
+        place_order('sell', 0.5)  # Sell 50% instead of stopping bot
 
-def get_trade_size(price, sma):
-    """Determine trade size dynamically based on trend strength."""
-    trend_strength = (price - sma) / sma
-    if trend_strength > 0.1:
-        return 0.03  # Strong uptrend
-    elif trend_strength > 0.05:
-        return 0.02  # Moderate uptrend
+def can_trade():
+    """Check if the bot can trade based on hourly trade limits."""
+    global trade_count, last_trade_hour
+    current_hour = time.strftime('%H')
+
+    if current_hour != last_trade_hour:
+        trade_count = 0
+        last_trade_hour = current_hour
+
+    return trade_count < MAX_TRADES_PER_HOUR
+
+def get_trade_size(price, reference_price):
+    """Dynamically adjust trade size based on price movement."""
+    price_change = (price - reference_price) / reference_price
+
+    if price_change < -0.10:  # Price dropped 10% → Buy more
+        return 0.03
+    elif price_change < -0.05:  # Price dropped 5% → Moderate buy
+        return 0.02
+    elif price_change < -0.02:  # Price dropped 2% → Small buy
+        return 0.01
+    elif price_change > 0.15:  # Price increased 15% → Sell more
+        return 0.03
+    elif price_change > 0.10:  # Price increased 10% → Moderate sell
+        return 0.02
+    elif price_change > 0.05:  # Price increased 5% → Small sell
+        return 0.01
     else:
-        return 0.01  # Weak uptrend
+        return 0.0  # No trade
 
 def place_order(side, trade_size):
-    """Place a market order (buy/sell) with dynamic trade size and cooldown."""
-    global last_trade_time
-    if time.time() - last_trade_time < MIN_TRADE_INTERVAL:
-        logging.info("⏳ Skipping trade - Cooldown in effect.")
+    """Place a market order (buy/sell) with cooldown & trade limits."""
+    global last_trade_time, trade_count
+    if time.time() - last_trade_time < MIN_TRADE_INTERVAL or not can_trade():
+        logging.info("⏳ Skipping trade - Cooldown in effect or trade limit reached.")
         return None
     try:
         order = exchange.create_market_order(SYMBOL, side, trade_size)
-        logging.info(f"✅ Order placed: {side} {trade_size} ETH")
         last_trade_time = time.time()
+        trade_count += 1
+        logging.info(f"✅ Order placed: {side} {trade_size} ETH")
         return order
     except Exception as e:
         logging.exception("Order failed")
@@ -151,7 +178,7 @@ def place_order(side, trade_size):
 
 def run_bot():
     """Main trading loop"""
-    global last_buy_price, cached_balance, cached_price, initial_balance
+    global initial_balance, last_buy_price, last_sell_price
 
     balance = fetch_balance()
     if balance:
@@ -169,36 +196,18 @@ def run_bot():
         rsi = calculate_rsi(df)
         sma = calculate_sma(df)
         current_price = fetch_ticker_price()
-        trade_size = get_trade_size(current_price, sma)
-        
-        # Fetch and log only ETH and USDT balances
-        balance = fetch_balance()
-        eth_balance = balance['free'].get('ETH', 0) if balance else 0
-        usdt_balance = balance['free'].get('USDT', 0) if balance else 0
 
-        logging.info(f"""
-        📊 Market Data:
-        - RSI: {rsi}
-        - Price: {current_price}
-        - SMA: {sma}
-        - Trade Size: {trade_size}
-        
-        💰 Account Balance:
-        - ETH: {eth_balance}
-        - USDT: {usdt_balance}
-        """)
+        trade_size = get_trade_size(current_price, last_buy_price if last_buy_price else current_price)
 
         if rsi < OVERSOLD and current_price > sma:
-            logging.info("🔵 RSI Low & Above SMA – Buying ETH")
             place_order('buy', trade_size)
-        elif rsi > OVERBOUGHT and eth_balance > 0 and current_price < sma:
-            logging.info("🔴 RSI High & Below SMA – Selling ETH")
+            last_buy_price = current_price
+        elif rsi > OVERBOUGHT and current_price < sma:
             place_order('sell', trade_size)
-        else:
-            logging.info("⏳ No trade executed this cycle.")
-        
+            last_sell_price = current_price
+
         check_profit_loss()
-        time.sleep(60)
+        time.sleep(random.uniform(1.5, 2.5))  # Randomized delay to avoid API bans
 
 # Run the bot
 run_bot()
