@@ -26,14 +26,13 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# ✅ Fix for Binance Time Sync Issue
 exchange = ccxt.binanceus({
     'apiKey': API_KEY,
     'secret': API_SECRET,
     'options': {'adjustForTimeDifference': True},
 })
 
-# ✅ Ensure time sync with Binance
+Ensure time sync with Binance
 exchange.checkRequiredCredentials()
 exchange.load_markets()
 exchange.fetch_time()
@@ -51,13 +50,12 @@ MIN_TRADE_INTERVAL = 300  # 5-minute cooldown between trades
 MAX_TRADES_PER_HOUR = 3  # Limit max trades per hour
 
 # Track last trade details
-last_buy_price = None
-cached_balance = None
-cached_price = None
-initial_balance = None
 last_trade_time = 0
 trade_count = 0
 last_trade_hour = time.strftime('%H')
+last_buy_price = None
+last_sell_price = None
+initial_balance = None
 
 def fetch_data():
     """Fetch historical market data with retry logic"""
@@ -129,7 +127,7 @@ def check_profit_loss():
         logging.info("🚨 Stop-Loss Triggered. Stopping bot.")
         exit()
     elif balance_change >= TAKE_PROFIT_THRESHOLD:
-        logging.info("🎉 Profit threshold reached. Taking partial profit.")
+        logging.info("🎉 Profit threshold reached. Taking gradual profit.")
         place_order('sell', 0.5)  # Sell 50% instead of stopping bot
 
 def can_trade():
@@ -143,15 +141,24 @@ def can_trade():
 
     return trade_count < MAX_TRADES_PER_HOUR
 
-def get_trade_size(price, sma):
-    """Determine trade size dynamically based on trend strength."""
-    trend_strength = (price - sma) / sma
-    if trend_strength > 0.1:
-        return 0.03  # Strong uptrend
-    elif trend_strength > 0.05:
-        return 0.02  # Moderate uptrend
+def get_trade_size(price, reference_price):
+    """Dynamically adjust trade size based on price movement."""
+    price_change = (price - reference_price) / reference_price
+
+    if price_change < -0.10:  # Price dropped 10% → Buy more
+        return 0.03
+    elif price_change < -0.05:  # Price dropped 5% → Moderate buy
+        return 0.02
+    elif price_change < -0.02:  # Price dropped 2% → Small buy
+        return 0.01
+    elif price_change > 0.15:  # Price increased 15% → Sell more
+        return 0.03
+    elif price_change > 0.10:  # Price increased 10% → Moderate sell
+        return 0.02
+    elif price_change > 0.05:  # Price increased 5% → Small sell
+        return 0.01
     else:
-        return 0.01  # Weak uptrend
+        return 0.0  # No trade
 
 def place_order(side, trade_size):
     """Place a market order (buy/sell) with cooldown & trade limits."""
@@ -171,7 +178,7 @@ def place_order(side, trade_size):
 
 def run_bot():
     """Main trading loop"""
-    global initial_balance
+    global initial_balance, last_buy_price, last_sell_price
 
     balance = fetch_balance()
     if balance:
@@ -189,18 +196,15 @@ def run_bot():
         rsi = calculate_rsi(df)
         sma = calculate_sma(df)
         current_price = fetch_ticker_price()
-        trade_size = get_trade_size(current_price, sma)
 
-        balance = fetch_balance()
-        eth_balance = balance['free'].get('ETH', 0) if balance else 0
-        usdt_balance = balance['free'].get('USDT', 0) if balance else 0
+        trade_size = get_trade_size(current_price, last_buy_price if last_buy_price else current_price)
 
-        logging.info(f"📊 RSI: {rsi} | Price: {current_price} | SMA: {sma} | Trade Size: {trade_size} | ETH: {eth_balance} | USDT: {usdt_balance}")
-
-        if rsi < OVERSOLD and current_price > sma and rsi > 32:
+        if rsi < OVERSOLD and current_price > sma:
             place_order('buy', trade_size)
-        elif rsi > OVERBOUGHT and eth_balance > 0 and current_price < sma:
+            last_buy_price = current_price
+        elif rsi > OVERBOUGHT and current_price < sma:
             place_order('sell', trade_size)
+            last_sell_price = current_price
 
         check_profit_loss()
         time.sleep(random.uniform(1.5, 2.5))  # Randomized delay to avoid API bans
