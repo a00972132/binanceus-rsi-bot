@@ -15,6 +15,13 @@ The **Binance RSI Trading Bot** is an automated crypto trading system for **ETH/
 - It uses 5-minute candlesticks (TIMEFRAME = '5m').
 
 **Buy Conditions** (All must be true):
+- ✅ Buy more as price drops → Trade size increases as price falls.
+
+Price drops 2% → Buy 0.01 ETH
+
+Price drops 5% → Buy 0.02 ETH
+
+Price drops 10% → Buy 0.03 ETH
 
 - ✅ RSI < 30 (oversold) + RSI must recover slightly before rebuying (e.g., RSI > 32)
 - ✅ Price > 200-SMA (confirming an uptrend)
@@ -26,6 +33,13 @@ The **Binance RSI Trading Bot** is an automated crypto trading system for **ETH/
       🔹 Strong uptrend → Buy 0.03 ETH
 
  **Sell Conditions** (All must be true):
+- 🔴 Sell more as price rises → Trade size increases as price climbs.
+
+Price rises 5% → Sell 0.01 ETH
+
+Price rises 10% → Sell 0.02 ETH
+
+Price rises 15% → Sell 0.03 ETH
 
 - 🔴 RSI > 70 (overbought)
 - 🔴 Price < 200-SMA (confirming a downtrend)
