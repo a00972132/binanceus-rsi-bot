@@ -25,12 +25,16 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Connect to Binance
 exchange = ccxt.binanceus({
     'apiKey': API_KEY,
     'secret': API_SECRET,
-    'options': {'adjustForTimeDifference': True}
+    'options': {'adjustForTimeDifference': True},  # Auto adjust for time sync
 })
+
+# ✅ Force time synchronization to Binance server
+exchange.checkRequiredCredentials()
+exchange.load_markets()
+exchange.fetch_time()  # Fetches server time to prevent -1021 error
 
 # Trading parameters
 SYMBOL = 'ETH/USDT'
@@ -114,10 +118,10 @@ def check_profit_loss():
     balance_change = total_balance / initial_balance if initial_balance else 1
     
     if balance_change <= STOP_LOSS_THRESHOLD:
-        logging.info("🚨 Loss threshold exceeded. Stopping bot.")
+        logging.info("🚨 Stop-Loss Triggered. Stopping bot.")
         exit()
     elif balance_change >= TAKE_PROFIT_THRESHOLD:
-        logging.info("🎉 Profit threshold reached. Stopping bot.")
+        logging.info("🎉 Take-Profit Triggered. Stopping bot.")
         exit()
 
 def get_trade_size(price, sma):
