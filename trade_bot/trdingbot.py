@@ -3,8 +3,8 @@ import pandas as pd
 import time
 import logging
 import random
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
 
 # Load environment variables
 dotenv_path = "/Users/will/Desktop/Code/Tradingbot/binanceus_creds.env"
@@ -24,6 +24,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
+logging.info("🔍 Trading bot started")
 
 # ✅ Exchange Configuration
 exchange = ccxt.binanceus({
@@ -36,188 +37,267 @@ exchange = ccxt.binanceus({
 exchange.checkRequiredCredentials()
 exchange.load_markets()
 exchange.fetch_time()
+logging.info("✅ Exchange configuration complete")
 
 # 🔥 Trading Parameters
 SYMBOL = 'ETH/USDT'
 TIMEFRAME = '5m'
 RSI_PERIOD = 14
 SMA_PERIOD = 200
-OVERBOUGHT = 70
-OVERSOLD = 30
-STOP_LOSS_THRESHOLD = 0.80  
-TAKE_PROFIT_THRESHOLD = 1.20  
-TRAILING_STOP_PERCENT = 0.05  # 5% trailing stop-loss
-MIN_TRADE_INTERVAL = 300  
-MAX_TRADES_PER_HOUR = 3  
+TRAILING_STOP_PERCENT = 0.05
+MIN_TRADE_INTERVAL = 300           # Minimum 5 minutes between trades
+MAX_TRADES_PER_HOUR = 3
+RISK_PER_TRADE = 0.02  # 2% risk per trade
 
-# 🛠 Track Trading Data
+# Track Trading Data
 last_trade_time = 0
 trade_count = 0
 last_trade_hour = time.strftime('%H')
-last_buy_price = None
-last_sell_price = None
 initial_balance = None
-highest_balance = 0  # Fixed issue with uninitialized highest balance
+highest_balance = 0
 
-# ✅ Ensure Trading Limits
-def can_trade():
-    global trade_count, last_trade_hour
+# ✅ Retry Logic for API Calls
+def retry_api_call(api_func, retries=3, delay=2):
+    for attempt in range(retries):
+        try:
+            return api_func()
+        except ccxt.NetworkError as e:
+            logging.warning(f"Network error: {e}. Retrying in {delay}s...")
+        except ccxt.ExchangeError as e:
+            logging.warning(f"Exchange error: {e}. Retrying in {delay}s...")
+        except Exception as e:
+            logging.error(f"Unexpected error: {e}")
+            return None
+        time.sleep(delay * (2 ** attempt))
+    return None
+
+# ✅ Market Data Fetching
+def fetch_data():
+    """
+    Fetch OHLCV data and return as a DataFrame.
+    """
+    return retry_api_call(lambda: pd.DataFrame(
+        exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=max(RSI_PERIOD, SMA_PERIOD) + 2),
+        columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+    ))
+
+def fetch_balance():
+    """
+    Fetch account balance.
+    """
+    return retry_api_call(lambda: exchange.fetch_balance())
+
+def fetch_ticker_price():
+    """
+    Fetch last ticker price for SYMBOL.
+    """
+    price_data = retry_api_call(lambda: exchange.fetch_ticker(SYMBOL))
+    return price_data.get('last', 0) if price_data else 0
+
+# 📊 Technical Indicators
+def calculate_rsi(df, period=14):
+    """
+    Calculate RSI using Wilder's smoothing.
+    """
+    delta = df['close'].diff()
+    up = delta.clip(lower=0)
+    down = -1 * delta.clip(upper=0)
+    ema_up = up.ewm(com=period - 1, adjust=False).mean()
+    ema_down = down.ewm(com=period - 1, adjust=False).mean()
+    rs = ema_up / ema_down
+    return 100 - (100 / (1 + rs)).iloc[-1]
+
+def calculate_sma(df, period=200):
+    """
+    Calculate Simple Moving Average.
+    """
+    return df['close'].rolling(window=period).mean().iloc[-1]
+
+def calculate_atr(df, period=14):
+    """
+    Calculate Average True Range using True Range = max of:
+        high - low,
+        abs(high - prev_close),
+        abs(low - prev_close)
+    and Wilder's smoothing for ATR.
+    """
+    df['prev_close'] = df['close'].shift(1)
+    df['tr1'] = df['high'] - df['low']
+    df['tr2'] = (df['high'] - df['prev_close']).abs()
+    df['tr3'] = (df['low'] - df['prev_close']).abs()
+    df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+    df['atr'] = df['tr'].ewm(alpha=1/period, adjust=False).mean()
+    return df['atr'].iloc[-1]
+
+def calculate_macd(df):
+    """
+    Calculate MACD line and Signal line.
+    Returns (macd_line, signal_line).
+    """
+    macd_line = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
+    signal_line = macd_line.ewm(span=9).mean()
+    return macd_line, signal_line
+
+def get_trade_size(price, balance, atr):
+    """
+    Position sizing based on RISK_PER_TRADE of free USDT, 
+    divided by ATR as a volatility-based approximation.
+    """
+    usdt_free = balance['free'].get('USDT', 0)
+    risk_amount = usdt_free * RISK_PER_TRADE
+    if atr == 0 or price == 0:
+        return 0
+    # This is a simple method: trade_size = risk / atr
+    # You could refine to incorporate an actual stop distance, etc.
+    return (risk_amount / atr)
+
+def get_order_book_spread():
+    """
+    Fetch order book and return the absolute spread.
+    """
+    order_book = retry_api_call(lambda: exchange.fetch_order_book(SYMBOL))
+    if not order_book:
+        return None, None, None
+    bids = order_book['bids']
+    asks = order_book['asks']
+    if not bids or not asks:
+        return None, None, None
+
+    bid_price = bids[0][0]
+    ask_price = asks[0][0]
+    spread = ask_price - bid_price
+    return bid_price, ask_price, spread
+
+def place_order(side, trade_size):
+    """
+    Place a market order, respecting:
+      - MIN_TRADE_INTERVAL
+      - MAX_TRADES_PER_HOUR
+      - Spread check (percentage-based)
+    """
+    global last_trade_time, trade_count, last_trade_hour
+
+    now = time.time()
+    # Check minimal interval
+    if (now - last_trade_time) < MIN_TRADE_INTERVAL:
+        logging.warning("Trade interval too short, skipping.")
+        return None
+
+    # Reset trade count on hour change
     current_hour = time.strftime('%H')
     if current_hour != last_trade_hour:
         trade_count = 0
         last_trade_hour = current_hour
-    return trade_count < MAX_TRADES_PER_HOUR
 
-# ✅ Market Data Fetching with Retry Logic
-def fetch_data():
-    for _ in range(3):
-        try:
-            bars = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=max(RSI_PERIOD, SMA_PERIOD) + 1)
-            if bars:
-                return pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        except Exception as e:
-            logging.warning(f"Error fetching data, retrying: {e}")
-            time.sleep(2)
-    logging.error("❌ Failed to fetch market data")
-    return None
-
-def fetch_ticker_price():
-    """Fetch current market price with retries and prevent None errors."""
-    for _ in range(3):
-        try:
-            price_data = exchange.fetch_ticker(SYMBOL)
-            price = price_data.get('last')
-            if price:
-                return price
-        except Exception as e:
-            logging.warning(f"Error fetching ticker price, retrying: {e}")
-            time.sleep(2)
-    logging.error("❌ Failed to fetch ticker price")
-    return 0  # Return 0 instead of None to prevent calculation errors
-
-def fetch_balance():
-    """Fetch account balance with retries."""
-    for _ in range(3):
-        try:
-            balance = exchange.fetch_balance()
-            return balance if balance else None
-        except Exception as e:
-            logging.warning(f"Error fetching balance, retrying: {e}")
-            time.sleep(2)
-    logging.error("❌ Failed to fetch balance")
-    return {"total": {"USDT": 0}, "free": {"ETH": 0, "USDT": 0}}
-
-# 📊 Technical Indicators
-def calculate_rsi(df):
-    if df is None or df.empty:
+    # Check trades per hour
+    if trade_count >= MAX_TRADES_PER_HOUR:
+        logging.warning("Reached max trades per hour, skipping trade.")
         return None
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs)).iloc[-1]
 
-def calculate_sma(df):
-    return df['close'].rolling(window=SMA_PERIOD).mean().iloc[-1]
+    bid_price, ask_price, spread = get_order_book_spread()
+    if spread is None or ask_price is None or ask_price == 0:
+        logging.warning("Could not fetch valid order book. Skipping trade.")
+        return None
 
-# 🔥 Risk Management
-def check_profit_loss():
-    """Apply stop-loss and trailing stop-loss."""
-    global initial_balance, highest_balance
-    balance = fetch_balance()
-    if not balance:
-        return
-
-    total_balance = balance['total'].get('USDT', 0)
-    if total_balance > highest_balance:
-        highest_balance = total_balance
-
-    # Apply stop-loss & trailing stop
-    if total_balance <= highest_balance * (1 - TRAILING_STOP_PERCENT):
-        logging.info("🚨 Trailing Stop-Loss Triggered. Stopping bot.")
-        return
-    if total_balance <= initial_balance * STOP_LOSS_THRESHOLD:
-        logging.info("🚨 Stop-Loss Triggered. Stopping bot.")
-        return
-
-# 📈 Trade Size Calculation
-def get_trade_size(price, reference_price, rsi):
-    price_change = (price - reference_price) / reference_price
-
-    if rsi < 30 and price_change < -0.02:
-        return 0.01  
-    elif rsi < 25 and price_change < -0.05:
-        return 0.02  
-    elif rsi < 20 and price_change < -0.10:
-        return 0.03  
-    elif rsi > 70 and price_change > 0.05:
-        return -0.01  
-    elif rsi > 75 and price_change > 0.10:
-        return -0.02  
-    elif rsi > 80 and price_change > 0.15:
-        return -0.03  
-    return 0.0  
-
-# ✅ Place Orders Using Market Orders (Reverted for Stability)
-def place_order(side, trade_size):
-    global last_trade_time, trade_count
-    if time.time() - last_trade_time < MIN_TRADE_INTERVAL or not can_trade():
+    # Percentage-based spread check
+    spread_percentage = (spread / ask_price) * 100
+    if spread_percentage > 0.1:  # e.g. skip if > 0.1% spread
+        logging.warning(f"Spread too high ({spread_percentage:.2f}%). Skipping trade.")
         return None
 
     try:
         order = exchange.create_market_order(SYMBOL, side, abs(trade_size))
-        last_trade_time = time.time()
+        last_trade_time = now
         trade_count += 1
-        logging.info(f"✅ Market order placed: {side.upper()} {abs(trade_size)} ETH")
+        logging.info(f"✅ Market order placed: {side.upper()} {abs(trade_size)} {SYMBOL.split('/')[0]}")
         return order
     except Exception as e:
         logging.exception("❌ Order failed")
         return None
 
-# 🚀 Main Trading Loop
+def check_profit_loss():
+    """
+    Simple trailing stop check based on total USDT balance.
+    If total balance drops more than TRAILING_STOP_PERCENT from its peak, exit.
+    """
+    global initial_balance, highest_balance
+    balance = fetch_balance()
+    if not balance:
+        return
+    
+    total_balance = balance['total'].get('USDT', 0)
+    # Update highest balance
+    if total_balance > highest_balance:
+        highest_balance = total_balance
+    
+    # Check trailing stop
+    if total_balance <= highest_balance * (1 - TRAILING_STOP_PERCENT):
+        logging.info("🚨 Trailing Stop-Loss Triggered. Stopping bot.")
+        # Depending on your preference:
+        # Option A: exit immediately
+        exit()
+        # Option B: place a market sell of all positions, then exit
+        # Option C: just go into a 'risk-off' mode (no new trades)
+        
 def run_bot():
-    global initial_balance, highest_balance, last_buy_price, last_sell_price
+    global initial_balance, highest_balance
 
-    print("🔍 Starting trading bot...")
+    logging.info("🔍 Starting trading bot...")
+    
     balance = fetch_balance()
     if balance:
         initial_balance = balance['total'].get('USDT', 0)
-        highest_balance = initial_balance  # Ensure highest balance is set initially
-        print(f"✅ Initial balance: {initial_balance}")
+        highest_balance = initial_balance
+        logging.info(f"✅ Initial balance: {initial_balance}")
     else:
-        print("❌ Failed to fetch initial balance. Exiting.")
+        logging.error("❌ Failed to fetch initial balance. Exiting.")
         exit()
-
+    
     while True:
-        print("🔄 Fetching market data...")
+        # Fetch Data
         df = fetch_data()
-        if df is None:
-            print("⚠ No market data, retrying in 60s...")
+        if df is None or df.empty:
+            logging.warning("No market data returned. Sleeping 60s.")
             time.sleep(60)
             continue
-
-        print("📊 Calculating indicators...")
-        rsi, sma, price = calculate_rsi(df), calculate_sma(df), fetch_ticker_price()
         
-        if price == 0:
-            print("⚠ No valid price data, retrying in 60s...")
-            time.sleep(60)
-            continue  
-
-        print(f"📈 RSI: {rsi}, SMA: {sma}, Price: {price}")
-        trade_size = get_trade_size(price, last_buy_price or price, rsi)
-        print(f"📌 Trade Size: {trade_size}")
-
-        if trade_size != 0:
-            print(f"🚀 Placing order: {'BUY' if trade_size > 0 else 'SELL'} {abs(trade_size)} ETH")
-            place_order('buy' if trade_size > 0 else 'sell', abs(trade_size))
-            last_buy_price = price if trade_size > 0 else last_buy_price
-            last_sell_price = price if trade_size < 0 else last_sell_price
-
-        print("🔍 Checking profit/loss...")
+        # Calculate Indicators
+        rsi_val = calculate_rsi(df, RSI_PERIOD)
+        sma_val = calculate_sma(df, SMA_PERIOD)
+        macd_line, signal_line = calculate_macd(df)
+        price = fetch_ticker_price()
+        atr_val = calculate_atr(df, 14)
+        current_balance = fetch_balance()
+        
+        # Determine trade size
+        trade_size = 0
+        if current_balance:
+            trade_size = get_trade_size(price, current_balance, atr_val)
+        
+        logging.info(
+            f"📈 RSI: {rsi_val:.2f}, SMA: {sma_val:.2f}, "
+            f"Price: {price:.2f}, ATR: {atr_val:.2f}"
+        )
+        
+        # ---------------------------
+        # Example unified signals
+        # ---------------------------
+        buy_signal = (rsi_val < 30) and (macd_line.iloc[-1] > signal_line.iloc[-1])
+        sell_signal = (rsi_val > 70) and (macd_line.iloc[-1] < signal_line.iloc[-1])
+        
+        # Execute trade if signals
+        if trade_size > 0:
+            if buy_signal:
+                place_order('buy', trade_size)
+            elif sell_signal:
+                place_order('sell', trade_size)
+        
+        # Check trailing stop logic
         check_profit_loss()
-        print("⏳ Sleeping before next trade...")
-        time.sleep(random.uniform(1.5, 2.5))
+        
+        # Sleep ~60s to avoid over-polling. 
+        # You can adjust to match candle close times if you want.
+        time.sleep(60)
 
-
+# Run the bot
 run_bot()
