@@ -2,7 +2,6 @@ import ccxt
 import pandas as pd
 import time
 import logging
-import random
 import os
 from dotenv import load_dotenv
 
@@ -15,18 +14,19 @@ API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
 
 if not API_KEY or not API_SECRET:
+    # Using ERROR so it stands out as a critical issue
     logging.error("API keys not found. Exiting.")
     exit()
 
 # Configure logging
 logging.basicConfig(
     filename="trading_bot.log", 
-    level=logging.INFO,
+    level=logging.INFO,  # <-- We use INFO to get a cycle-by-cycle view
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
-logging.info("🔍 Trading bot started")
+logging.info("Trading bot started")
 
-# ✅ Exchange Configuration
+# Exchange Configuration
 exchange = ccxt.binanceus({
     'apiKey': API_KEY,
     'secret': API_SECRET,
@@ -37,17 +37,17 @@ exchange = ccxt.binanceus({
 exchange.checkRequiredCredentials()
 exchange.load_markets()
 exchange.fetch_time()
-logging.info("✅ Exchange configuration complete")
+logging.info("Exchange configuration complete")
 
-# 🔥 Trading Parameters
+# Trading Parameters
 SYMBOL = 'ETH/USDT'
-TIMEFRAME = '5m'
+TIMEFRAME = '1m'
 RSI_PERIOD = 14
 SMA_PERIOD = 200
 TRAILING_STOP_PERCENT = 0.05
-MIN_TRADE_INTERVAL = 300           # Minimum 5 minutes between trades
-MAX_TRADES_PER_HOUR = 3
-RISK_PER_TRADE = 0.02  # 2% risk per trade
+MIN_TRADE_INTERVAL = 60     # Minimum 1 minute between trades
+MAX_TRADES_PER_HOUR = 10
+RISK_PER_TRADE = 0.02       # 2% risk per trade
 
 # Track Trading Data
 last_trade_time = 0
@@ -56,7 +56,7 @@ last_trade_hour = time.strftime('%H')
 initial_balance = None
 highest_balance = 0
 
-# ✅ Retry Logic for API Calls
+# Retry Logic for API Calls
 def retry_api_call(api_func, retries=3, delay=2):
     for attempt in range(retries):
         try:
@@ -71,34 +71,26 @@ def retry_api_call(api_func, retries=3, delay=2):
         time.sleep(delay * (2 ** attempt))
     return None
 
-# ✅ Market Data Fetching
+# Market Data Fetching
 def fetch_data():
-    """
-    Fetch OHLCV data and return as a DataFrame.
-    """
+    """Fetch OHLCV data and return as a DataFrame."""
     return retry_api_call(lambda: pd.DataFrame(
         exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=max(RSI_PERIOD, SMA_PERIOD) + 2),
         columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
     ))
 
 def fetch_balance():
-    """
-    Fetch account balance.
-    """
+    """Fetch account balance."""
     return retry_api_call(lambda: exchange.fetch_balance())
 
 def fetch_ticker_price():
-    """
-    Fetch last ticker price for SYMBOL.
-    """
+    """Fetch last ticker price for SYMBOL."""
     price_data = retry_api_call(lambda: exchange.fetch_ticker(SYMBOL))
     return price_data.get('last', 0) if price_data else 0
 
-# 📊 Technical Indicators
+# Technical Indicators
 def calculate_rsi(df, period=14):
-    """
-    Calculate RSI using Wilder's smoothing.
-    """
+    """Calculate RSI using Wilder's smoothing."""
     delta = df['close'].diff()
     up = delta.clip(lower=0)
     down = -1 * delta.clip(upper=0)
@@ -108,17 +100,15 @@ def calculate_rsi(df, period=14):
     return 100 - (100 / (1 + rs)).iloc[-1]
 
 def calculate_sma(df, period=200):
-    """
-    Calculate Simple Moving Average.
-    """
+    """Calculate Simple Moving Average."""
     return df['close'].rolling(window=period).mean().iloc[-1]
 
 def calculate_atr(df, period=14):
     """
     Calculate Average True Range using True Range = max of:
-        high - low,
-        abs(high - prev_close),
-        abs(low - prev_close)
+      high - low,
+      abs(high - prev_close),
+      abs(low - prev_close)
     and Wilder's smoothing for ATR.
     """
     df['prev_close'] = df['close'].shift(1)
@@ -147,17 +137,17 @@ def get_trade_size(price, balance, atr):
     risk_amount = usdt_free * RISK_PER_TRADE
     if atr == 0 or price == 0:
         return 0
-    # This is a simple method: trade_size = risk / atr
-    # You could refine to incorporate an actual stop distance, etc.
-    return (risk_amount / atr)
+    # This is a simple method: trade_size = risk_amount / atr
+    return risk_amount / atr
 
 def get_order_book_spread():
     """
-    Fetch order book and return the absolute spread.
+    Fetch order book and return the absolute spread (bid, ask, spread).
     """
     order_book = retry_api_call(lambda: exchange.fetch_order_book(SYMBOL))
     if not order_book:
         return None, None, None
+
     bids = order_book['bids']
     asks = order_book['asks']
     if not bids or not asks:
@@ -178,6 +168,7 @@ def place_order(side, trade_size):
     global last_trade_time, trade_count, last_trade_hour
 
     now = time.time()
+
     # Check minimal interval
     if (now - last_trade_time) < MIN_TRADE_INTERVAL:
         logging.warning("Trade interval too short, skipping.")
@@ -199,9 +190,9 @@ def place_order(side, trade_size):
         logging.warning("Could not fetch valid order book. Skipping trade.")
         return None
 
-    # Percentage-based spread check
     spread_percentage = (spread / ask_price) * 100
-    if spread_percentage > 0.1:  # e.g. skip if > 0.1% spread
+    # If the spread is too large, skip
+    if spread_percentage > 0.1:
         logging.warning(f"Spread too high ({spread_percentage:.2f}%). Skipping trade.")
         return None
 
@@ -209,10 +200,10 @@ def place_order(side, trade_size):
         order = exchange.create_market_order(SYMBOL, side, abs(trade_size))
         last_trade_time = now
         trade_count += 1
-        logging.info(f"✅ Market order placed: {side.upper()} {abs(trade_size)} {SYMBOL.split('/')[0]}")
+        logging.info(f"Order placed: {side.upper()} {abs(trade_size):.6f} {SYMBOL.split('/')[0]}")
         return order
     except Exception as e:
-        logging.exception("❌ Order failed")
+        logging.error(f"Order failed: {e}")
         return None
 
 def check_profit_loss():
@@ -226,34 +217,34 @@ def check_profit_loss():
         return
     
     total_balance = balance['total'].get('USDT', 0)
-    # Update highest balance
+
+    # Update highest balance if we have a new peak
     if total_balance > highest_balance:
         highest_balance = total_balance
     
-    # Check trailing stop
+    # If we drop below our highest balance by TRAILING_STOP_PERCENT, exit
     if total_balance <= highest_balance * (1 - TRAILING_STOP_PERCENT):
-        logging.info("🚨 Trailing Stop-Loss Triggered. Stopping bot.")
-        # Depending on your preference:
-        # Option A: exit immediately
+        logging.warning("Trailing stop triggered. Exiting bot.")
         exit()
-        # Option B: place a market sell of all positions, then exit
-        # Option C: just go into a 'risk-off' mode (no new trades)
-        
+
 def run_bot():
     global initial_balance, highest_balance
 
-    logging.info("🔍 Starting trading bot...")
+    logging.info("Starting trading bot...")
     
     balance = fetch_balance()
     if balance:
         initial_balance = balance['total'].get('USDT', 0)
         highest_balance = initial_balance
-        logging.info(f"✅ Initial balance: {initial_balance}")
+        logging.info(f"Initial USDT balance: {initial_balance:.2f}")
     else:
-        logging.error("❌ Failed to fetch initial balance. Exiting.")
+        logging.error("Failed to fetch initial balance. Exiting.")
         exit()
     
     while True:
+        # -- Start of cycle logging --
+        logging.info("----- New cycle -----")
+
         # Fetch Data
         df = fetch_data()
         if df is None or df.empty:
@@ -274,29 +265,29 @@ def run_bot():
         if current_balance:
             trade_size = get_trade_size(price, current_balance, atr_val)
         
+        # Log indicator values + potential trade size
         logging.info(
-            f"📈 RSI: {rsi_val:.2f}, SMA: {sma_val:.2f}, "
-            f"Price: {price:.2f}, ATR: {atr_val:.2f}"
+            f"Indicators => RSI: {rsi_val:.2f}, SMA: {sma_val:.2f}, "
+            f"Price: {price:.2f}, ATR: {atr_val:.2f}, Trade Size: {trade_size:.6f}"
         )
         
-        # ---------------------------
-        # Example unified signals
-        # ---------------------------
+        # Example signals
         buy_signal = (rsi_val < 30) and (macd_line.iloc[-1] > signal_line.iloc[-1])
         sell_signal = (rsi_val > 70) and (macd_line.iloc[-1] < signal_line.iloc[-1])
         
         # Execute trade if signals
         if trade_size > 0:
             if buy_signal:
+                logging.info("Buy signal detected.")
                 place_order('buy', trade_size)
             elif sell_signal:
+                logging.info("Sell signal detected.")
                 place_order('sell', trade_size)
         
         # Check trailing stop logic
         check_profit_loss()
         
-        # Sleep ~60s to avoid over-polling. 
-        # You can adjust to match candle close times if you want.
+        # Sleep ~60s to avoid over-polling. Adjust as needed.
         time.sleep(60)
 
 # Run the bot
