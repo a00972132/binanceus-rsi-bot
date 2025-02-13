@@ -14,14 +14,13 @@ API_KEY = os.getenv("BINANCE_API_KEY")
 API_SECRET = os.getenv("BINANCE_API_SECRET")
 
 if not API_KEY or not API_SECRET:
-    # Using ERROR so it stands out as a critical issue
     logging.error("API keys not found. Exiting.")
     exit()
 
 # Configure logging
 logging.basicConfig(
     filename="trading_bot.log", 
-    level=logging.INFO,  # <-- We use INFO to get a cycle-by-cycle view
+    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logging.info("Trading bot started")
@@ -45,9 +44,9 @@ TIMEFRAME = '1m'
 RSI_PERIOD = 14
 SMA_PERIOD = 200
 TRAILING_STOP_PERCENT = 0.05
-MIN_TRADE_INTERVAL = 60     # Minimum 1 minute between trades
+MIN_TRADE_INTERVAL = 60  # Minimum 1 minute between trades
 MAX_TRADES_PER_HOUR = 10
-RISK_PER_TRADE = 0.02       # 2% risk per trade
+RISK_PER_TRADE = 0.02    # 2% risk per trade
 
 # Track Trading Data
 last_trade_time = 0
@@ -105,11 +104,12 @@ def calculate_sma(df, period=200):
 
 def calculate_atr(df, period=14):
     """
-    Calculate Average True Range using True Range = max of:
-      high - low,
-      abs(high - prev_close),
-      abs(low - prev_close)
-    and Wilder's smoothing for ATR.
+    Calculate Average True Range using:
+      1) true range = max of 
+         (high - low), 
+         abs(high - prev_close), 
+         abs(low - prev_close)
+      2) ATR via Wilder's smoothing
     """
     df['prev_close'] = df['close'].shift(1)
     df['tr1'] = df['high'] - df['low']
@@ -128,22 +128,48 @@ def calculate_macd(df):
     signal_line = macd_line.ewm(span=9).mean()
     return macd_line, signal_line
 
-def get_trade_size(price, balance, atr):
+# UPDATED get_trade_size to risk 2% of total account (ETH + USDT)
+def get_trade_size(balance, price, atr):
     """
-    Position sizing based on RISK_PER_TRADE of free USDT, 
-    divided by ATR as a volatility-based approximation.
+    Calculate how many ETH to buy/sell, risking 2% of total portfolio
+    (free ETH + free USDT).
+    The "stop distance" is assumed to be 1× ATR in dollar terms = (atr * price).
     """
-    usdt_free = balance['free'].get('USDT', 0)
-    risk_amount = usdt_free * RISK_PER_TRADE
-    if atr == 0 or price == 0:
+    if price == 0 or atr == 0:
         return 0
-    # This is a simple method: trade_size = risk_amount / atr
-    return risk_amount / atr
+    
+    # 1) Get free ETH and USDT
+    eth_free = balance['free'].get('ETH', 0)
+    usdt_free = balance['free'].get('USDT', 0)
+
+    # 2) Convert ETH to USD + add free USDT => total USD
+    eth_value_usd = eth_free * price
+    total_account_value_usd = eth_value_usd + usdt_free
+
+    # 3) Risk 2% of that total
+    risk_amount = total_account_value_usd * RISK_PER_TRADE
+
+    # 4) Stop distance in dollar terms (1× ATR)
+    stop_distance_usd = atr * price
+    if stop_distance_usd <= 0:
+        return 0
+
+    # 5) Final position size in ETH
+    trade_size_eth = risk_amount / stop_distance_usd
+
+    # OPTIONAL: Enforce a $10 notional min to avoid exchange rejections
+    min_notional = 10
+    if trade_size_eth * price < min_notional:
+        # Option A: skip trade
+        # return 0
+        
+        # Option B: force to $10
+        trade_size_eth = min_notional / price
+
+    return trade_size_eth
 
 def get_order_book_spread():
-    """
-    Fetch order book and return the absolute spread (bid, ask, spread).
-    """
+    """Fetch order book and return the absolute spread (bid, ask, spread)."""
     order_book = retry_api_call(lambda: exchange.fetch_order_book(SYMBOL))
     if not order_book:
         return None, None, None
@@ -263,7 +289,7 @@ def run_bot():
         # Determine trade size
         trade_size = 0
         if current_balance:
-            trade_size = get_trade_size(price, current_balance, atr_val)
+            trade_size = get_trade_size(current_balance, price, atr_val)
         
         # Log indicator values + potential trade size
         logging.info(
@@ -271,7 +297,7 @@ def run_bot():
             f"Price: {price:.2f}, ATR: {atr_val:.2f}, Trade Size: {trade_size:.6f}"
         )
         
-        # Example signals
+        # Example signals (adjust thresholds if you want more trades)
         buy_signal = (rsi_val < 30) and (macd_line.iloc[-1] > signal_line.iloc[-1])
         sell_signal = (rsi_val > 70) and (macd_line.iloc[-1] < signal_line.iloc[-1])
         
@@ -287,7 +313,7 @@ def run_bot():
         # Check trailing stop logic
         check_profit_loss()
         
-        # Sleep ~60s to avoid over-polling. Adjust as needed.
+        # Sleep ~60s to avoid over-polling. 
         time.sleep(60)
 
 # Run the bot
