@@ -35,6 +35,7 @@ exchange = ccxt.binanceus({
 
 exchange.checkRequiredCredentials()
 exchange.load_markets()
+exchange.load_time_difference()
 exchange.fetch_time()
 logging.info("Exchange configuration complete")
 
@@ -234,7 +235,7 @@ def place_order(side, trade_size):
 
 def check_profit_loss():
     """
-    Simple trailing stop check based on total USDT balance.
+    Simple trailing stop check based on total holdings (ETH and USDT).
     If total balance drops more than TRAILING_STOP_PERCENT from its peak, exit.
     """
     global initial_balance, highest_balance
@@ -242,14 +243,25 @@ def check_profit_loss():
     if not balance:
         return
     
-    total_balance = balance['total'].get('USDT', 0)
-
-    # Update highest balance if we have a new peak
-    if total_balance > highest_balance:
-        highest_balance = total_balance
+    # 1) Get the total ETH and USDT balances
+    eth_total = balance['total'].get('ETH', 0)
+    usdt_total = balance['total'].get('USDT', 0)
     
-    # If we drop below our highest balance by TRAILING_STOP_PERCENT, exit
-    if total_balance <= highest_balance * (1 - TRAILING_STOP_PERCENT):
+    # 2) Fetch current ETH price (in USDT) to convert ETH to USD
+    current_price = fetch_ticker_price() 
+    
+    # 3) Convert ETH holdings into USDT value
+    eth_value_usd = eth_total * current_price
+    
+    # 4) Combine both for overall portfolio value
+    overall_portfolio_usd = usdt_total + eth_value_usd
+    
+    # 5) Update highest balance if we have a new peak
+    if overall_portfolio_usd > highest_balance:
+        highest_balance = overall_portfolio_usd
+    
+    # 6) If we drop below our highest balance by TRAILING_STOP_PERCENT, exit
+    if overall_portfolio_usd <= highest_balance * (1 - TRAILING_STOP_PERCENT):
         logging.warning("Trailing stop triggered. Exiting bot.")
         exit()
 
