@@ -43,7 +43,7 @@ Bid/ask spread (must be below 0.1%).
 Then places a market order (buy or sell) for the computed trade size in ETH.
 Trailing Stop Check
 
-If your total USDT balance (including any conversions in Binance’s accounting) falls 5% (TRAILING_STOP_PERCENT = 0.05) below your highest recorded balance, the bot logs a warning and exits (or you could adjust the code to close positions first).
+If the total total ETH and USDT balances (including any conversions in Binance’s accounting) falls 5% (TRAILING_STOP_PERCENT = 0.05) below your highest recorded balance, the bot logs a warning and exits (or you could adjust the code to close positions first).
 Logging & Sleep
 
 The bot logs each cycle’s indicator values and any trades placed.
