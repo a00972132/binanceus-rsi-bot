@@ -2,7 +2,7 @@ PY=.venv/bin/python
 PIP=.venv/bin/pip
 STREAMLIT=.venv/bin/streamlit
 
-.PHONY: venv install run start stop logs bot-start bot-stop bot-logs clean clean-logs clean-pids clean-caches
+.PHONY: venv install run start stop logs bot-start bot-stop bot-logs clean clean-logs clean-pids clean-caches dev-setup fmt lint check
 
 venv:
 	python3 -m venv .venv
@@ -10,6 +10,10 @@ venv:
 install: venv
 	$(PIP) install -U pip setuptools wheel
 	$(PIP) install -r requirements.txt
+
+dev-setup: venv
+	$(PIP) install -r requirements-dev.txt
+	. .venv/bin/activate && pre-commit install
 
 # Ensure directories
 prepare:
@@ -62,3 +66,12 @@ clean-caches:
 	rm -rf __pycache__ */__pycache__ .mypy_cache .pytest_cache || true
 
 clean: clean-logs clean-pids clean-caches
+
+fmt:
+	. .venv/bin/activate && black . && isort --profile=black .
+
+lint:
+	. .venv/bin/activate && ruff check .
+
+check:
+	. .venv/bin/activate && pre-commit run --all-files

@@ -13,6 +13,17 @@ An organized, easy-to-run trading bot project with a Streamlit dashboard, safe c
 - Stop background dashboard:
   - `make stop`
 
+## Dev Setup (optional)
+
+- Install dev tools and pre-commit hooks:
+  - `make dev-setup`
+- Run formatters:
+  - `make fmt`
+- Run linter:
+  - `make lint`
+- Run all pre-commit checks:
+  - `make check`
+
 ## Configure Credentials
 
 - Copy `config/.env.example` to project root as `.env` and fill in values:
@@ -59,6 +70,8 @@ An organized, easy-to-run trading bot project with a Streamlit dashboard, safe c
 
 - `.gitignore` excludes `.env`, `logs/`, `run/`, `.venv/`, and OS/editor files
 - Safe to commit and push without exposing secrets
+- If `.DS_Store` appears as tracked in `git status`, remove it once:
+  - `git rm --cached .DS_Store`
 
 ## Notes
 
