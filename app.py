@@ -177,7 +177,14 @@ def _render_header(pid_running: bool, pid: Optional[int], symbol: str, timeframe
     st.title("BinanceUS RSI Bot Dashboard")
     status_badge = "🟢 Running" if pid_running else "🔴 Stopped"
     st.caption(f"Status: {status_badge}{f' (PID {pid})' if pid_running and pid else ''}")
-    st.caption(f"Symbol: {symbol} • Timeframe: {timeframe}")
+    # Try to read paper-trading flag from bot module
+    paper = False
+    try:
+        from trade_bot import trading_bot as bot_mod
+        paper = bool(getattr(bot_mod, 'PAPER_TRADING', False))
+    except Exception:
+        pass
+    st.caption(f"Symbol: {symbol} • Timeframe: {timeframe} • Paper: {'On' if paper else 'Off'}")
 
 
 def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timeframe: str) -> Tuple[str, str]:

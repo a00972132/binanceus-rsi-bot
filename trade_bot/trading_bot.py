@@ -86,6 +86,8 @@ logging.info("Exchange configuration complete")
 # Trading Parameters
 SYMBOL = os.getenv('BOT_SYMBOL', 'ETH/USDT')
 TIMEFRAME = os.getenv('BOT_TIMEFRAME', '1m')  # 1‑minute candles
+# Optional paper-trading (no live orders); set BOT_PAPER_TRADING=true to enable
+PAPER_TRADING = os.getenv('BOT_PAPER_TRADING', 'false').lower() in ('1', 'true', 'yes', 'y')
 RSI_PERIOD = 14
 SMA_PERIOD = 50
 TRAILING_STOP_PERCENT = 0.08  # 8% trailing stop
@@ -97,6 +99,7 @@ POSITION_SCALE_OUT = [0.3, 0.3, 0.4]
 
 # Log selected symbol/timeframe for visibility
 logging.info(f"Bot config => SYMBOL={SYMBOL}, TIMEFRAME={TIMEFRAME}")
+logging.info(f"Paper trading: {'ON' if PAPER_TRADING else 'OFF'}")
 
 # ML Model Parameters
 FEATURE_WINDOW = 20
@@ -393,13 +396,53 @@ def get_trade_size(balance: dict, price: float, atr: float,
     if stop_distance_usd <= 0:
         return 0.0
     trade_size_eth = risk_amount / stop_distance_usd
-    min_notional = 10.0
-    if trade_size_eth * price < min_notional:
-        trade_size_eth = min_notional / price
+    # Respect exchange limits (amount precision, min cost) when possible
+    trade_size_eth = adjust_amount_for_market(trade_size_eth, price)
     # Use momentum score to scale size
     if momentum_score_val > 1.5:
         trade_size_eth *= 1.2
     return max(trade_size_eth, 0.0)
+
+
+def adjust_amount_for_market(amount: float, price: float) -> float:
+    """Round amount to market precision and enforce minimum notional/amount.
+    Falls back to a $10 notional minimum when limits are unavailable.
+    """
+    try:
+        if amount <= 0 or price <= 0:
+            return 0.0
+        # Round to exchange precision
+        try:
+            amount_precise = float(exchange.amount_to_precision(SYMBOL, amount))
+        except Exception:
+            amount_precise = amount
+        # Enforce min cost/amount if available
+        market = exchange.market(SYMBOL)
+        min_cost = None
+        min_amount = None
+        if market and isinstance(market, dict):
+            limits = market.get('limits') or {}
+            cost_limits = limits.get('cost') or {}
+            amt_limits = limits.get('amount') or {}
+            min_cost = cost_limits.get('min')
+            min_amount = amt_limits.get('min')
+        if min_amount:
+            amount_precise = max(amount_precise, float(min_amount))
+        # If min_cost known, lift amount to satisfy it
+        if min_cost and price > 0:
+            amount_precise = max(amount_precise, float(min_cost) / price)
+        # Fallback to $10 notional if nothing else available
+        if (not min_cost) and price > 0 and amount_precise * price < 10.0:
+            amount_precise = 10.0 / price
+        # Final precision pass
+        try:
+            amount_precise = float(exchange.amount_to_precision(SYMBOL, amount_precise))
+        except Exception:
+            pass
+        return max(amount_precise, 0.0)
+    except Exception as e:
+        logging.warning(f"Adjust amount failed; using raw amount. Err: {e}")
+        return max(amount, 0.0)
 
 
 def get_order_book_spread():
@@ -464,9 +507,48 @@ def place_order(side: str, trade_size: float, current_price: float,
         logging.warning(
             f"Spread too high ({spread_percentage:.2f}%). Skipping trade.")
         return None
+    # Cap trade size by available balance (for buys) with small fee buffer
     try:
-        order = exchange.create_market_order(
-            SYMBOL, side, abs(trade_size))
+        if side == 'buy':
+            bal = fetch_balance() or {}
+            usdt_free = float((bal.get('free') or {}).get('USDT', 0.0))
+            if current_price > 0 and usdt_free > 0:
+                max_by_usdt = (usdt_free * 0.995) / current_price
+                trade_size = min(trade_size, max_by_usdt)
+    except Exception:
+        pass
+    # Normalize trade size to market constraints
+    trade_size = adjust_amount_for_market(trade_size, current_price)
+    if trade_size <= 0:
+        logging.warning("Trade size <= 0 after adjustment; skipping.")
+        return None
+    try:
+        # Paper mode: do not place live orders
+        if PAPER_TRADING:
+            last_trade_time = now  # type: ignore[assignment]
+            trade_count += 1  # type: ignore[assignment]
+            log_trade_metrics(side, trade_size, current_price, {
+                'rsi': calculate_rsi(df, RSI_PERIOD),
+                'macd': calculate_macd(df)[0].iloc[-1],
+                'signal': calculate_macd(df)[1].iloc[-1],
+                'volume_ratio': df['volume'].iloc[-1] / calculate_volume_ma(df)
+            })
+            fake_order = {
+                'id': f'paper-{int(now)}',
+                'symbol': SYMBOL,
+                'side': side,
+                'type': 'market',
+                'amount': trade_size,
+                'price': current_price,
+                'info': {'paper': True}
+            }
+            logging.info(f"[PAPER] {side.upper()} {trade_size:.6f} {SYMBOL.split('/')[0]} @ ${current_price:.2f}")
+            return fake_order
+        # Live order
+        if not exchange.has or not exchange.has.get('createMarketOrder', True):
+            logging.error("Exchange does not support market orders via CCXT.")
+            return None
+        order = exchange.create_market_order(SYMBOL, side, abs(trade_size))
         last_trade_time = now
         trade_count += 1
         log_trade_metrics(side, trade_size, current_price, {
