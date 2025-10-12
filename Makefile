@@ -11,39 +11,42 @@ install: venv
 	$(PIP) install -U pip setuptools wheel
 	$(PIP) install -r requirements.txt
 
+# Ensure directories
+prepare:
+	mkdir -p logs run
+
 # Run Streamlit in the foreground (opens browser)
-run:
+run: prepare
 	. .venv/bin/activate && $(STREAMLIT) run app.py
 
 # Start Streamlit in background (headless)
-start:
-	. .venv/bin/activate && nohup $(STREAMLIT) run app.py --server.headless true --server.port 8501 > .streamlit-app.log 2>&1 & echo $$! > .streamlit-app.pid && sleep 1 && echo "Started Streamlit (pid $$(cat .streamlit-app.pid)) on http://localhost:8501"
+start: prepare
+	. .venv/bin/activate && nohup $(STREAMLIT) run app.py --server.headless true --server.port 8501 > logs/streamlit-app.log 2>&1 & echo $$! > run/streamlit-app.pid && sleep 1 && echo "Started Streamlit (pid $$(cat run/streamlit-app.pid)) on http://localhost:8501"
 
 stop:
-	@if [ -f .streamlit-app.pid ]; then \
-		kill $$(cat .streamlit-app.pid) 2>/dev/null || true; \
-		rm -f .streamlit-app.pid; \
+	@if [ -f run/streamlit-app.pid ]; then \
+		kill $$(cat run/streamlit-app.pid) 2>/dev/null || true; \
+		rm -f run/streamlit-app.pid; \
 		echo "Stopped Streamlit"; \
 	else \
 		echo "No Streamlit PID file found."; \
 	fi
 
 logs:
-	@tail -n 200 -f .streamlit-app.log
+	@tail -n 200 -f logs/streamlit-app.log
 
 # Start/stop the trading bot as a background process
-bot-start:
-	. .venv/bin/activate && nohup $(PY) -u trade_bot/tradingbot_v2.py > trading_bot.out 2>&1 & echo $$! > bot.pid && sleep 1 && echo "Started bot (pid $$(cat bot.pid))"
+bot-start: prepare
+	. .venv/bin/activate && nohup $(PY) -u trade_bot/tradingbot_v2.py > logs/trading_bot.out 2>&1 & echo $$! > run/bot.pid && sleep 1 && echo "Started bot (pid $$(cat run/bot.pid))"
 
 bot-stop:
-	@if [ -f bot.pid ]; then \
-		kill $$(cat bot.pid) 2>/dev/null || true; \
-		rm -f bot.pid; \
+	@if [ -f run/bot.pid ]; then \
+		kill $$(cat run/bot.pid) 2>/dev/null || true; \
+		rm -f run/bot.pid; \
 		echo "Stopped bot"; \
 	else \
 		echo "No bot PID file found."; \
 	fi
 
 bot-logs:
-	@tail -n 200 -f trading_bot.out
-
+	@tail -n 200 -f logs/trading_bot.out

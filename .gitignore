@@ -19,13 +19,9 @@ __pycache__/
 .streamlit/secrets.toml
 
 # App logs / pids
-.streamlit-app.log
-.streamlit-app.pid
-bot.pid
-trading_bot.log
-trading_bot.out
+logs/
+run/
 
 # Builds
 dist/
 build/
-

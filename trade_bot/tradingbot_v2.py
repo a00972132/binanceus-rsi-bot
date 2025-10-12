@@ -5,6 +5,7 @@ import logging
 import os
 from dotenv import load_dotenv
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
@@ -14,12 +15,25 @@ from ta.volatility import BollingerBands, AverageTrueRange
 from collections import deque
 from typing import Tuple, Dict, Any, List, Optional, Union
 
-# Load environment variables
-dotenv_path = "/Users/will/Desktop/Code/Tradingbot/binanceus_creds.env"
-if not os.path.exists(dotenv_path):
-    logging.error(f"Environment file not found at {dotenv_path}. Exiting.")
-    raise SystemExit("Missing environment file")
-load_dotenv(dotenv_path=dotenv_path)
+# Load environment variables (prefer BOT_ENV_FILE or project .env)
+ROOT_DIR = Path(__file__).resolve().parents[1]
+env_candidates = []
+if os.getenv('BOT_ENV_FILE'):
+    env_candidates.append(Path(os.getenv('BOT_ENV_FILE')))
+env_candidates.append(ROOT_DIR / '.env')
+env_candidates.append(Path("/Users/will/Desktop/Code/Tradingbot/binanceus_creds.env"))
+loaded_env = False
+for path in env_candidates:
+    try:
+        if path.exists():
+            load_dotenv(dotenv_path=str(path))
+            logging.info(f"Loaded environment from {path}")
+            loaded_env = True
+            break
+    except Exception:
+        pass
+if not loaded_env:
+    logging.warning("No environment file loaded; relying on process env variables.")
 
 # Configure Binance API Keys
 API_KEY = os.getenv("BINANCE_API_KEY")
@@ -37,8 +51,10 @@ logging.basicConfig(
 )
 
 # Add file handler with rotation
+LOG_DIR = ROOT_DIR / 'logs'
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 file_handler = RotatingFileHandler(
-    "trading_bot.log",
+    str(LOG_DIR / 'trading_bot.log'),
     maxBytes=1024 * 1024,  # 1MB
     backupCount=5
 )

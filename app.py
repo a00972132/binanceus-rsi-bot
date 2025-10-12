@@ -19,8 +19,8 @@ except Exception:  # pragma: no cover
 # Paths and constants
 REPO_DIR = Path(__file__).parent
 BOT_MODULE_PATH = REPO_DIR / "trade_bot" / "tradingbot_v2.py"
-LOG_PATH = REPO_DIR / "trading_bot.log"
-PID_PATH = REPO_DIR / "bot.pid"
+LOG_PATH = REPO_DIR / "logs" / "trading_bot.log"
+PID_PATH = REPO_DIR / "run" / "bot.pid"
 
 # Common timeframe options for Binance US (via CCXT)
 TIMEFRAME_OPTIONS = [
@@ -44,6 +44,7 @@ def _read_log_tail(max_lines: int = 200) -> str:
 
 def _write_pid(pid: int) -> None:
     try:
+        PID_PATH.parent.mkdir(parents=True, exist_ok=True)
         PID_PATH.write_text(str(pid))
     except Exception:
         pass

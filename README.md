@@ -1,31 +1,65 @@
-ETH_Bot.py Wiki
+# BinanceUS RSI Bot — Streamlit Dashboard
 
-Overview
-This bot is an automated trading system for ETH/USDT on Binance US. It combines technical analysis, machine learning, and robust risk management to make buy/sell decisions and manage open positions.
+An organized, easy-to-run trading bot project with a Streamlit dashboard, safe credential handling, and simple tooling.
 
+## Quick Start
 
-Key Features
-Exchange: Uses ccxt to interact with Binance US.
-Technical Indicators: RSI, SMA, MACD, ATR, Bollinger Bands, Volume MA.
-Machine Learning: Random Forest classifier predicts next-candle direction using engineered features.
-Risk Management: Enforces max drawdown, position size, daily loss, and trade frequency limits.
-Market Regime Detection: Adjusts risk and take-profit parameters based on volatility and trend.
-Logging: Rotates log files and outputs to both file and console.
-Order Execution: Places market orders with spread checks and interval controls.
-Take-Profit & Trailing Stop: Scales out of positions at multiple profit levels and exits on portfolio drawdown.
+- Create a virtual environment and install:
+  - `make install`
+- Start the dashboard (foreground):
+  - `make run`
+- Or start in background:
+  - `make start` (URL: http://localhost:8501)
+- Stop background dashboard:
+  - `make stop`
 
+## Configure Credentials
 
-Main Components
-1. PredictiveTrader
-Prepares features and labels for ML.
-Trains and predicts price direction.
-2. RiskManager
-Tracks drawdown, daily loss, and trade count.
-Decides if a trade is allowed.
-3. Technical Analysis Functions
-Calculate RSI, SMA, MACD, ATR, Bollinger Bands, and volume ratios.
-Detects trend and volume confirmation.
-4. Trading Logic
-Fetches market data and account balance.
-Generates buy/sell signals using ML and TA.
-Manages open positions, take-profits, and trailing stops.
+- Copy `config/.env.example` to project root as `.env` and fill in values:
+  - `BINANCE_API_KEY`, `BINANCE_API_SECRET`
+  - Optional: `BOT_SYMBOL`, `BOT_TIMEFRAME`
+- Alternatively, set `BOT_ENV_FILE` to point at an absolute path of your env file.
+- The repo `.gitignore` excludes `.env` and keeps secrets out of Git.
+
+## Project Structure
+
+- `app.py`: Streamlit dashboard to monitor and control the bot
+- `trade_bot/tradingbot_v2.py`: Main trading bot logic (used by the app)
+- `trade_bot/trdingbot.py`: Older bot version (kept for reference)
+- `utils/test_connection.py`: Quick connection test to BinanceUS
+- `config/.env.example`: Example environment file
+- `logs/`: Runtime logs (ignored by Git)
+- `run/`: PID files for background processes (ignored by Git)
+- `Makefile`: Common tasks (install, run, start/stop, logs)
+
+## Streamlit Dashboard
+
+- Start/stop the bot from the sidebar
+- Set Symbol and Timeframe before starting the bot
+- Live metrics: price, balances, indicators (RSI, MACD), candlesticks
+- Log tail for quick debugging
+
+## Environment Variables
+
+- `BINANCE_API_KEY` / `BINANCE_API_SECRET`: Required
+- `BOT_SYMBOL`: Trading pair (e.g., `ETH/USDT`)
+- `BOT_TIMEFRAME`: Candle timeframe (e.g., `1m`, `5m`, `1h`)
+- `BOT_ENV_FILE`: Absolute path to a `.env` file to load
+
+## Logs and PIDs
+
+- Bot logs: `logs/trading_bot.log`
+- Streamlit logs: `logs/streamlit-app.log`
+- PIDs stored under `run/`
+
+## Git Hygiene
+
+- `.gitignore` excludes `.env`, `logs/`, `run/`, `.venv/`, and OS/editor files
+- Safe to commit and push without exposing secrets
+
+## Notes
+
+- The dashboard uses `trade_bot/tradingbot_v2.py`.
+- The older `trade_bot/trdingbot.py` is not used by the UI.
+- If you want paper-trading mode or additional config, open an issue or ask to extend the UI.
+

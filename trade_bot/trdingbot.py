@@ -4,6 +4,7 @@ import time
 import logging
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Load environment variables
 dotenv_path = "/Users/will/Desktop/Code/Tradingbot/binanceus_creds.env"
@@ -17,9 +18,11 @@ if not API_KEY or not API_SECRET:
     logging.error("API keys not found. Exiting.")
     exit()
 
-# Configure logging
+# Configure logging (write under logs/)
+LOG_DIR = Path(__file__).resolve().parents[1] / 'logs'
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
-    filename="trading_bot.log", 
+    filename=str(LOG_DIR / "trading_bot.log"), 
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
