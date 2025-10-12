@@ -242,6 +242,15 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
         st.code(str(BOT_MODULE_PATH), language="bash")
         st.code(str(LOG_PATH), language="bash")
 
+        st.divider()
+        st.subheader("Logs")
+        log_lines = st.slider("Show last lines", 20, 1000, 200, 10)
+        newest_first = st.checkbox("Newest first", value=True)
+        level_choice = st.selectbox("Level filter", ["All", "ERROR", "WARNING", "INFO", "DEBUG"], index=0)
+        st.session_state["log_lines"] = log_lines
+        st.session_state["log_newest_first"] = newest_first
+        st.session_state["log_level_filter"] = level_choice
+
         return symbol, timeframe
 
 def main():
@@ -373,8 +382,27 @@ def main():
 
     # Logs viewer
     st.subheader("Bot Logs")
-    tail = _read_log_tail(300)
-    st.code(tail, language="log")
+    want_lines = int(st.session_state.get("log_lines", 200))
+    newest_first = bool(st.session_state.get("log_newest_first", True))
+    level_choice = str(st.session_state.get("log_level_filter", "All"))
+    raw_tail = _read_log_tail(want_lines)
+    lines = raw_tail.splitlines()
+    # Optional filter by level
+    if level_choice != "All":
+        tag = f" - {level_choice} - "
+        lines = [ln for ln in lines if tag in ln]
+    # Newest first ordering
+    if newest_first:
+        lines = list(reversed(lines))
+    view_text = "\n".join(lines)
+    st.code(view_text, language="log")
+    # Download button for the shown snippet
+    st.download_button(
+        label="Download shown logs",
+        data=view_text,
+        file_name="log_tail.txt",
+        mime="text/plain",
+    )
 
     # Footer
     st.caption("Tip: Use the sidebar to start/stop the bot and adjust refresh.")
