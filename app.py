@@ -226,6 +226,42 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
         st.session_state['rsi_buy_max'] = float(rsi_buy_max)
         st.session_state['rsi_sell_min'] = float(rsi_sell_min)
 
+        # Spread + cadence tuning
+        st.caption("Execution guards")
+        spc1, spc2 = st.columns(2)
+        # Defaults from bot (values are in percent, e.g., 0.12 means 0.12%)
+        try:
+            from trade_bot import trading_bot as _bot_mod2
+            def_sp_norm = float(getattr(_bot_mod2, 'MAX_SPREAD_PERCENT_NORMAL', 0.12))
+            def_sp_vol = float(getattr(_bot_mod2, 'MAX_SPREAD_PERCENT_VOLATILE', 0.22))
+            def_min_int = int(getattr(_bot_mod2, 'MIN_TRADE_INTERVAL', 30))
+            def_max_tph = int(getattr(_bot_mod2, 'MAX_TRADES_PER_HOUR', 20))
+        except Exception:
+            def_sp_norm, def_sp_vol, def_min_int, def_max_tph = 0.12, 0.22, 30, 20
+        with spc1:
+            spread_normal = st.slider(
+                "Max spread (normal) %", 0.05, 0.50, float(def_sp_norm), 0.01,
+                help="Skip trades if order book spread is above this in normal regime"
+            )
+            min_interval = st.slider(
+                "Min trade interval (sec)", 5, 120, int(def_min_int), 1,
+                help="Minimum seconds between trades"
+            )
+        with spc2:
+            spread_volatile = st.slider(
+                "Max spread (volatile) %", 0.10, 0.80, float(def_sp_vol), 0.01,
+                help="Skip trades if spread above this in volatile regime"
+            )
+            max_trades_per_hour = st.slider(
+                "Max trades per hour", 1, 60, int(def_max_tph), 1,
+                help="Hard cap on trading frequency"
+            )
+        # Persist for UI reference
+        st.session_state['spread_normal'] = float(spread_normal)
+        st.session_state['spread_volatile'] = float(spread_volatile)
+        st.session_state['min_interval'] = int(min_interval)
+        st.session_state['max_trades_per_hour'] = int(max_trades_per_hour)
+
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Start Bot", type="primary", disabled=pid_running):
@@ -238,6 +274,10 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
                     'BOT_CONFIRMATIONS_REQUIRED_SELL': confirms,
                     'BOT_RSI_BUY_MAX': rsi_buy_max,
                     'BOT_RSI_SELL_MIN': rsi_sell_min,
+                    'BOT_MAX_SPREAD_PERCENT_NORMAL': spread_normal,
+                    'BOT_MAX_SPREAD_PERCENT_VOLATILE': spread_volatile,
+                    'BOT_MIN_TRADE_INTERVAL': min_interval,
+                    'BOT_MAX_TRADES_PER_HOUR': max_trades_per_hour,
                 })
                 if new_pid:
                     st.session_state["bot_pid"] = new_pid
@@ -498,6 +538,16 @@ def main():
                 st.markdown(
                     f"Confirmations: {colorize(f'{confs_sell_met}/{confirms_required_sell}', confs_sell_met >= confirms_required_sell)}",
                     unsafe_allow_html=True,
+                )
+
+            # Legend / tips
+            with st.expander("Legend: How to read colors", expanded=False):
+                st.markdown(
+                    "- Green = condition strongly supports action (buy/sell)\n"
+                    "- Yellow = neutral zone (neither strong buy nor sell)\n"
+                    "- Red = condition does not support action\n"
+                    "- Model up-prob must exceed threshold for buys (or be below 1-threshold for sells)\n"
+                    "- Confirmations count checks MACD direction, Trend alignment (Price vs SMA), and Volume boost"
                 )
         except Exception:
             pass
