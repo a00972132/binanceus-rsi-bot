@@ -1,0 +1,69 @@
+
+Collecting usage statistics. To deactivate, set browser.gatherUsageStats to false.
+
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.1.181:8501
+  External URL: http://72.85.159.163:8501
+
+  For better performance, install the Watchdog module:
+
+  $ xcode-select --install
+  $ pip install watchdog
+            
+2025-10-12 16:58:16.797 Uncaught app exception
+Traceback (most recent call last):
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/.venv/lib/python3.8/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 88, in exec_func_with_error_handling
+    result = func()
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/.venv/lib/python3.8/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 579, in code_to_exec
+    exec(code, module.__dict__)
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/app.py", line 52, in <module>
+    def _read_pid() -> int | None:
+TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'
+2025-10-12 17:00:07.049 Uncaught app exception
+Traceback (most recent call last):
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/.venv/lib/python3.8/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 88, in exec_func_with_error_handling
+    result = func()
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/.venv/lib/python3.8/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 579, in code_to_exec
+    exec(code, module.__dict__)
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/app.py", line 52, in <module>
+    def _read_pid() -> int | None:
+TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'
+2025-10-12 17:06:32.788 Uncaught app exception
+Traceback (most recent call last):
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/.venv/lib/python3.8/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 88, in exec_func_with_error_handling
+    result = func()
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/.venv/lib/python3.8/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 579, in code_to_exec
+    exec(code, module.__dict__)
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/app.py", line 53, in <module>
+    def _read_pid() -> int | None:
+TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'
+2025-10-12 17:08:25,458 - INFO - Trading bot started (updated version)
+2025-10-12 17:08:25,458 - INFO - Trading bot started (updated version)
+2025-10-12 17:08:25,899 - INFO - Exchange configuration complete
+2025-10-12 17:08:25,899 - INFO - Exchange configuration complete
+2025-10-12 17:08:25,899 - INFO - Bot config => SYMBOL=ETH/USDT, TIMEFRAME=1m
+2025-10-12 17:08:25,899 - INFO - Bot config => SYMBOL=ETH/USDT, TIMEFRAME=1m
+2025-10-12 17:09:27.286 Uncaught app exception
+Traceback (most recent call last):
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/.venv/lib/python3.8/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 88, in exec_func_with_error_handling
+    result = func()
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/.venv/lib/python3.8/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 579, in code_to_exec
+    exec(code, module.__dict__)
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/app.py", line 339, in <module>
+    main()
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/app.py", line 240, in main
+    selected_symbol, selected_timeframe = _render_sidebar(pid_running, pid, selected_symbol, selected_timeframe)
+  File "/Users/will/Desktop/Code/binanceus-rsi-bot/app.py", line 190, in _render_sidebar
+    st.experimental_rerun()
+AttributeError: module 'streamlit' has no attribute 'experimental_rerun'
+2025-10-12 17:10:39,445 - INFO - Loaded environment from /Users/will/Desktop/Code/Tradingbot/binanceus_creds.env
+2025-10-12 17:10:39,445 - INFO - Loaded environment from /Users/will/Desktop/Code/Tradingbot/binanceus_creds.env
+2025-10-12 17:10:39,445 - INFO - Trading bot started (updated version)
+2025-10-12 17:10:39,445 - INFO - Trading bot started (updated version)
+2025-10-12 17:10:39,839 - INFO - Exchange configuration complete
+2025-10-12 17:10:39,839 - INFO - Exchange configuration complete
+2025-10-12 17:10:39,839 - INFO - Bot config => SYMBOL=ETH/USDT, TIMEFRAME=1m
+2025-10-12 17:10:39,839 - INFO - Bot config => SYMBOL=ETH/USDT, TIMEFRAME=1m

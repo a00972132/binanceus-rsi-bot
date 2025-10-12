@@ -25,7 +25,7 @@ An organized, easy-to-run trading bot project with a Streamlit dashboard, safe c
 
 - `app.py`: Streamlit dashboard to monitor and control the bot
 - `trade_bot/tradingbot_v2.py`: Main trading bot logic (used by the app)
-- `trade_bot/trdingbot.py`: Older bot version (kept for reference)
+- `trade_bot/tradingbot_v2.py`: Primary/only bot used by the app
 - `utils/test_connection.py`: Quick connection test to BinanceUS
 - `config/.env.example`: Example environment file
 - `logs/`: Runtime logs (ignored by Git)
@@ -60,6 +60,5 @@ An organized, easy-to-run trading bot project with a Streamlit dashboard, safe c
 ## Notes
 
 - The dashboard uses `trade_bot/tradingbot_v2.py`.
-- The older `trade_bot/trdingbot.py` is not used by the UI.
+The legacy `trdingbot.py` has been removed to avoid confusion. All code paths use `tradingbot_v2.py`.
 - If you want paper-trading mode or additional config, open an issue or ask to extend the UI.
-
