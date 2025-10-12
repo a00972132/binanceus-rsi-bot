@@ -202,12 +202,29 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
         st.caption("Settings apply when you start the bot. Restart to take effect.")
 
         st.subheader("Strategy Tuning")
+        # Defaults for RSI thresholds
+        try:
+            from trade_bot import trading_bot as _bot_mod
+            default_buy_rsi = float(getattr(_bot_mod, 'RSI_BUY_MAX', 40.0))
+            default_sell_rsi = float(getattr(_bot_mod, 'RSI_SELL_MIN', 60.0))
+        except Exception:
+            default_buy_rsi, default_sell_rsi = 40.0, 60.0
         aggr = st.selectbox("Aggressiveness", ["conservative", "balanced", "aggressive"], index=1,
                              help="Drives thresholds and trade frequency")
         threshold = st.slider("Model threshold", 0.50, 0.80, 0.65, 0.01,
                               help="Minimum ML up-probability to consider a buy (sell uses 1-threshold)")
         confirms = st.slider("Confirmations required", 1, 3, 2,
                              help="Count among [MACD, trend, volume]")
+        colr1, colr2 = st.columns(2)
+        with colr1:
+            rsi_buy_max = st.slider("RSI buy max", 20, 80, int(default_buy_rsi), 1,
+                                    help="Consider buys when RSI is below this")
+        with colr2:
+            rsi_sell_min = st.slider("RSI sell min", 20, 80, int(default_sell_rsi), 1,
+                                     help="Consider sells when RSI is above this")
+        # Save to session for the indicator panel
+        st.session_state['rsi_buy_max'] = float(rsi_buy_max)
+        st.session_state['rsi_sell_min'] = float(rsi_sell_min)
 
         col1, col2 = st.columns(2)
         with col1:
@@ -219,6 +236,8 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
                     'BOT_PREDICTION_THRESHOLD': threshold,
                     'BOT_CONFIRMATIONS_REQUIRED_BUY': confirms,
                     'BOT_CONFIRMATIONS_REQUIRED_SELL': confirms,
+                    'BOT_RSI_BUY_MAX': rsi_buy_max,
+                    'BOT_RSI_SELL_MIN': rsi_sell_min,
                 })
                 if new_pid:
                     st.session_state["bot_pid"] = new_pid
@@ -377,9 +396,9 @@ def main():
             except Exception:
                 up_prob = None
 
-            # Criteria thresholds
-            rsi_buy_max = float(getattr(bot, 'RSI_BUY_MAX', 70.0))
-            rsi_sell_min = float(getattr(bot, 'RSI_SELL_MIN', 30.0))
+            # Criteria thresholds (prefer UI session, fallback to bot)
+            rsi_buy_max = float(st.session_state.get('rsi_buy_max', getattr(bot, 'RSI_BUY_MAX', 70.0)))
+            rsi_sell_min = float(st.session_state.get('rsi_sell_min', getattr(bot, 'RSI_SELL_MIN', 30.0)))
             pred_thresh = float(getattr(bot, 'PREDICTION_THRESHOLD', 0.65))
             confirms_required_buy = int(getattr(bot, 'CONFIRMATIONS_REQUIRED_BUY', 2))
             confirms_required_sell = int(getattr(bot, 'CONFIRMATIONS_REQUIRED_SELL', 2))
@@ -405,6 +424,10 @@ def main():
             def colorize(text: str, ok: bool) -> str:
                 color = "#16a34a" if ok else "#dc2626"  # green/red
                 return f"<span style='color:{color};font-weight:600'>{text}</span>"
+            def color3(text: str, state: str) -> str:
+                # state: 'good'|'neutral'|'bad'
+                c = {'good': '#16a34a', 'neutral': '#f59e0b', 'bad': '#dc2626'}.get(state, '#dc2626')
+                return f"<span style='color:{c};font-weight:600'>{text}</span>"
 
             # ML probability badge
             ml_ok_buy = (up_prob is not None) and (up_prob > pred_thresh)
@@ -419,8 +442,15 @@ def main():
             bc, sc = st.columns(2)
             with bc:
                 st.caption("Buy Criteria")
+                # Three-state color for RSI: green (< sell_min), yellow (between), red (>= buy_max)
+                if rsi_val <= rsi_sell_min:
+                    rsi_state_buy = 'good'
+                elif rsi_val < rsi_buy_max:
+                    rsi_state_buy = 'neutral'
+                else:
+                    rsi_state_buy = 'bad'
                 st.markdown(
-                    f"RSI(14): {colorize(f'{rsi_val:.2f} < {rsi_buy_max:.0f}', rsi_val < rsi_buy_max)}",
+                    f"RSI(14): {color3(f'{rsi_val:.2f} < {rsi_buy_max:.0f}', rsi_state_buy)}",
                     unsafe_allow_html=True,
                 )
                 st.markdown(
@@ -442,8 +472,15 @@ def main():
 
             with sc:
                 st.caption("Sell Criteria")
+                # Three-state color for RSI: green (> buy_max), yellow (between), red (<= sell_min)
+                if rsi_val >= rsi_buy_max:
+                    rsi_state_sell = 'good'
+                elif rsi_val > rsi_sell_min:
+                    rsi_state_sell = 'neutral'
+                else:
+                    rsi_state_sell = 'bad'
                 st.markdown(
-                    f"RSI(14): {colorize(f'{rsi_val:.2f} > {rsi_sell_min:.0f}', rsi_val > rsi_sell_min)}",
+                    f"RSI(14): {color3(f'{rsi_val:.2f} > {rsi_sell_min:.0f}', rsi_state_sell)}",
                     unsafe_allow_html=True,
                 )
                 st.markdown(
