@@ -235,6 +235,12 @@ def main():
     try:
         if auto_enabled and st_autorefresh:
             st_autorefresh(interval=int(refresh_sec * 1000), key=f"auto_refresh_{refresh_sec}")
+        elif auto_enabled:
+            # HTML meta refresh fallback if plugin unavailable
+            st.markdown(
+                f"<meta http-equiv='refresh' content='{int(refresh_sec)}'>",
+                unsafe_allow_html=True,
+            )
     except Exception:
         pass
 
@@ -259,6 +265,7 @@ def main():
     selected_symbol = st.session_state.get('symbol', getattr(bot, 'SYMBOL', 'ETH/USDT'))
     selected_timeframe = st.session_state.get('timeframe', getattr(bot, 'TIMEFRAME', '1m'))
     _render_header(pid_running, pid, selected_symbol, selected_timeframe)
+    st.caption(f"Last refresh: {time.strftime('%H:%M:%S')}")
     selected_symbol, selected_timeframe = _render_sidebar(pid_running, pid, selected_symbol, selected_timeframe)
 
     # Apply selection to imported bot module for UI data
