@@ -197,12 +197,24 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
         st.session_state['timeframe'] = timeframe
         st.caption("Settings apply when you start the bot. Restart to take effect.")
 
+        st.subheader("Strategy Tuning")
+        aggr = st.selectbox("Aggressiveness", ["conservative", "balanced", "aggressive"], index=1,
+                             help="Drives thresholds and trade frequency")
+        threshold = st.slider("Model threshold", 0.50, 0.80, 0.65, 0.01,
+                              help="Minimum ML up-probability to consider a buy (sell uses 1-threshold)")
+        confirms = st.slider("Confirmations required", 1, 3, 2,
+                             help="Count among [MACD, trend, volume]")
+
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Start Bot", type="primary", disabled=pid_running):
                 new_pid = _start_bot_process({
                     'BOT_SYMBOL': symbol,
                     'BOT_TIMEFRAME': timeframe,
+                    'BOT_AGGRESSIVENESS': aggr,
+                    'BOT_PREDICTION_THRESHOLD': threshold,
+                    'BOT_CONFIRMATIONS_REQUIRED_BUY': confirms,
+                    'BOT_CONFIRMATIONS_REQUIRED_SELL': confirms,
                 })
                 if new_pid:
                     st.session_state["bot_pid"] = new_pid

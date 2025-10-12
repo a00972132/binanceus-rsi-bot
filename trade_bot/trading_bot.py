@@ -91,15 +91,42 @@ PAPER_TRADING = os.getenv('BOT_PAPER_TRADING', 'false').lower() in ('1', 'true',
 RSI_PERIOD = 14
 SMA_PERIOD = 50
 TRAILING_STOP_PERCENT = 0.08  # 8% trailing stop
+# Base defaults (may be overridden by env/aggressiveness)
 MIN_TRADE_INTERVAL = 30  # seconds between trades
 MAX_TRADES_PER_HOUR = 20  # trade frequency limit
 RISK_PER_TRADE = 0.05  # 5% of portfolio per trade (base risk)
 TAKE_PROFIT_LEVELS = [0.01, 0.02, 0.03]
 POSITION_SCALE_OUT = [0.3, 0.3, 0.4]
 
+# Tuning knobs
+AGGR = os.getenv('BOT_AGGRESSIVENESS', 'balanced').lower()  # conservative|balanced|aggressive
+RSI_BUY_MAX = float(os.getenv('BOT_RSI_BUY_MAX', '70'))
+RSI_SELL_MIN = float(os.getenv('BOT_RSI_SELL_MIN', '30'))
+# Model threshold (probability price goes up)
+DEFAULT_THRESHOLDS = {'conservative': 0.70, 'balanced': 0.65, 'aggressive': 0.58}
+PREDICTION_THRESHOLD = float(os.getenv('BOT_PREDICTION_THRESHOLD', str(DEFAULT_THRESHOLDS.get(AGGR, 0.65))))
+# Confirmations required among [MACD direction, trend alignment, volume boost]
+CONFIRMATIONS_REQUIRED_BUY = int(os.getenv('BOT_CONFIRMATIONS_REQUIRED_BUY', '2'))
+CONFIRMATIONS_REQUIRED_SELL = int(os.getenv('BOT_CONFIRMATIONS_REQUIRED_SELL', '2'))
+# Spread caps (% of ask)
+DEFAULT_SPREAD_NORMAL = {'conservative': 0.10, 'balanced': 0.12, 'aggressive': 0.15}
+DEFAULT_SPREAD_VOL = {'conservative': 0.18, 'balanced': 0.22, 'aggressive': 0.25}
+MAX_SPREAD_PERCENT_NORMAL = float(os.getenv('BOT_MAX_SPREAD_PERCENT_NORMAL', str(DEFAULT_SPREAD_NORMAL.get(AGGR, 0.12))))
+MAX_SPREAD_PERCENT_VOLATILE = float(os.getenv('BOT_MAX_SPREAD_PERCENT_VOLATILE', str(DEFAULT_SPREAD_VOL.get(AGGR, 0.22))))
+# Interval and frequency overrides by aggressiveness
+MIN_TRADE_INTERVAL = int(os.getenv('BOT_MIN_TRADE_INTERVAL', str({'conservative': 45, 'balanced': 30, 'aggressive': 20}.get(AGGR, 30))))
+MAX_TRADES_PER_HOUR = int(os.getenv('BOT_MAX_TRADES_PER_HOUR', str({'conservative': 12, 'balanced': 20, 'aggressive': 30}.get(AGGR, 20))))
+
 # Log selected symbol/timeframe for visibility
 logging.info(f"Bot config => SYMBOL={SYMBOL}, TIMEFRAME={TIMEFRAME}")
 logging.info(f"Paper trading: {'ON' if PAPER_TRADING else 'OFF'}")
+logging.info(
+    "Tuning => aggr=%s, pred_thresh=%.2f, conf_buy=%d, conf_sell=%d, "
+    "spread(normal=%.2f%%, vol=%.2f%%), min_interval=%ss, max_trades/hr=%s",
+    AGGR, PREDICTION_THRESHOLD, CONFIRMATIONS_REQUIRED_BUY, CONFIRMATIONS_REQUIRED_SELL,
+    MAX_SPREAD_PERCENT_NORMAL, MAX_SPREAD_PERCENT_VOLATILE,
+    MIN_TRADE_INTERVAL, MAX_TRADES_PER_HOUR,
+)
 
 # ML Model Parameters
 FEATURE_WINDOW = 20
@@ -502,7 +529,9 @@ def place_order(side: str, trade_size: float, current_price: float,
         return None
     spread_percentage = (spread / ask_price) * 100
     regime = detect_market_regime(df)
-    max_spread_percentage = 0.2 if regime == MarketRegime.VOLATILE else 0.1
+    max_spread_percentage = (
+        MAX_SPREAD_PERCENT_VOLATILE if regime == MarketRegime.VOLATILE else MAX_SPREAD_PERCENT_NORMAL
+    )
     if spread_percentage > max_spread_percentage:
         logging.warning(
             f"Spread too high ({spread_percentage:.2f}%). Skipping trade.")
@@ -854,21 +883,47 @@ def run_bot():
                 )
                 trade_size = 0.0
 
-            # Determine buy/sell signals
+            # Determine buy/sell signals (tunable confirmations)
+            macd_up = macd_line.iloc[-1] > signal_line.iloc[-1]
+            macd_down = macd_line.iloc[-1] < signal_line.iloc[-1]
+            confs_buy = [macd_up, trend_bullish, volume_confirmed]
+            confs_sell = [macd_down, (not trend_bullish), volume_confirmed]
+            confirmations_met_buy = sum(1 for c in confs_buy if c)
+            confirmations_met_sell = sum(1 for c in confs_sell if c)
+            confirmations_ok_buy = confirmations_met_buy >= max(0, CONFIRMATIONS_REQUIRED_BUY)
+            confirmations_ok_sell = confirmations_met_sell >= max(0, CONFIRMATIONS_REQUIRED_SELL)
+
             buy_signal = (
                 trade_size > 0 and
                 up_probability > PREDICTION_THRESHOLD and
-                rsi_val < 70 and
-                macd_line.iloc[-1] > signal_line.iloc[-1] and
-                (trend_bullish or volume_confirmed)
+                rsi_val < RSI_BUY_MAX and
+                confirmations_ok_buy
             )
             sell_signal = (
                 trade_size > 0 and
                 up_probability < (1 - PREDICTION_THRESHOLD) and
-                rsi_val > 30 and
-                macd_line.iloc[-1] < signal_line.iloc[-1] and
-                (not trend_bullish or volume_confirmed)
+                rsi_val > RSI_SELL_MIN and
+                confirmations_ok_sell
             )
+
+            # Diagnostics when no trade
+            if not buy_signal and not sell_signal:
+                reasons = []
+                if trade_size <= 0:
+                    reasons.append("size<=0")
+                if up_probability <= PREDICTION_THRESHOLD and up_probability >= (1 - PREDICTION_THRESHOLD):
+                    reasons.append(f"ml_prob={up_probability:.2f} below/near threshold")
+                if rsi_val >= RSI_BUY_MAX:
+                    reasons.append(f"rsi_buy_gate (RSI={rsi_val:.1f} >= {RSI_BUY_MAX})")
+                if rsi_val <= RSI_SELL_MIN:
+                    reasons.append(f"rsi_sell_gate (RSI={rsi_val:.1f} <= {RSI_SELL_MIN})")
+                if not confirmations_ok_buy and not confirmations_ok_sell:
+                    reasons.append(
+                        f"confirmations buy/sell not met (buy={confirmations_met_buy}/{CONFIRMATIONS_REQUIRED_BUY}, "
+                        f"sell={confirmations_met_sell}/{CONFIRMATIONS_REQUIRED_SELL})"
+                    )
+                if reasons:
+                    logging.info("No trade this cycle: " + "; ".join(reasons))
 
             # Execute buy signal
             if buy_signal:
