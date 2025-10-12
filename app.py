@@ -358,18 +358,64 @@ def main():
                 macd_df = pd.DataFrame({"macd": inds["macd"], "signal": inds["signal"]}, index=dfv.index)
                 st.line_chart(macd_df)
 
-        # Latest indicators summary
+        # Latest indicators summary with criteria coloring
         try:
             rsi_val = float(bot.calculate_rsi(df))
-            sma_val = float(bot.calculate_sma(df, 200))
+            sma_period = int(getattr(bot, 'SMA_PERIOD', 50))
+            sma_val = float(bot.calculate_sma(df, sma_period))
             macd_line, signal_line = bot.calculate_macd(df)
             latest_macd = float(macd_line.iloc[-1])
             latest_signal = float(signal_line.iloc[-1])
+
+            # Criteria (buy side)
+            rsi_buy_max = float(getattr(bot, 'RSI_BUY_MAX', 70.0))
+            rsi_ok = rsi_val < rsi_buy_max
+            try:
+                trend_bullish = bool(bot.check_trend(df, sma_val, price))
+            except Exception:
+                trend_bullish = bool(price > sma_val)
+            try:
+                volume_confirmed = bool(bot.check_volume(df))
+            except Exception:
+                volume_confirmed = False
+            macd_up = latest_macd > latest_signal
+            confirms_required = int(getattr(bot, 'CONFIRMATIONS_REQUIRED_BUY', 2))
+            confirms_met = int(sum(1 for c in [macd_up, trend_bullish, volume_confirmed] if c))
+            confirms_ok = confirms_met >= confirms_required
+
+            # Helpers for color
+            def colorize(text: str, ok: bool) -> str:
+                color = "#16a34a" if ok else "#dc2626"  # green/red
+                return f"<span style='color:{color};font-weight:600'>{text}</span>"
+
             cols2 = st.columns(4)
-            cols2[0].metric("RSI(14)", f"{rsi_val:.2f}")
-            cols2[1].metric("SMA(200)", f"{sma_val:,.2f}")
-            cols2[2].metric("MACD", f"{latest_macd:.4f}")
-            cols2[3].metric("Signal", f"{latest_signal:.4f}")
+            with cols2[0]:
+                st.markdown(
+                    f"RSI(14): {colorize(f'{rsi_val:.2f} < {rsi_buy_max:.0f}', rsi_ok)}",
+                    unsafe_allow_html=True,
+                )
+            with cols2[1]:
+                st.markdown(
+                    f"SMA({sma_period}): {colorize(f'{sma_val:,.2f}', price > sma_val)}",
+                    unsafe_allow_html=True,
+                )
+            with cols2[2]:
+                st.markdown(
+                    f"MACD: {colorize(f'{latest_macd:.4f}', macd_up)}",
+                    unsafe_allow_html=True,
+                )
+            with cols2[3]:
+                st.markdown(
+                    f"Signal: {colorize(f'{latest_signal:.4f}', macd_up)}",
+                    unsafe_allow_html=True,
+                )
+
+            # Confirmations summary
+            st.caption(
+                f"Confirmations (MACD up, Trend, Volume): "
+                f"{colorize(f'{confirms_met}/{confirms_required}', confirms_ok)}",
+                unsafe_allow_html=True,
+            )
         except Exception:
             pass
     else:
