@@ -4,6 +4,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional, Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -50,7 +51,7 @@ def _write_pid(pid: int) -> None:
         pass
 
 
-def _read_pid() -> int | None:
+def _read_pid() -> Optional[int]:
     try:
         if PID_PATH.exists():
             return int(PID_PATH.read_text().strip())
@@ -59,7 +60,7 @@ def _read_pid() -> int | None:
     return None
 
 
-def _is_process_running(pid: int | None) -> bool:
+def _is_process_running(pid: Optional[int]) -> bool:
     if not pid or pid <= 0:
         return False
     try:
@@ -73,7 +74,7 @@ def _is_process_running(pid: int | None) -> bool:
         return True
 
 
-def _start_bot_process(extra_env: dict | None = None) -> int | None:
+def _start_bot_process(extra_env: Optional[Dict[str, str]] = None) -> Optional[int]:
     if not BOT_MODULE_PATH.exists():
         st.error(f"Trading bot not found at {BOT_MODULE_PATH}")
         return None
@@ -97,7 +98,7 @@ def _start_bot_process(extra_env: dict | None = None) -> int | None:
         return None
 
 
-def _stop_bot_process(pid: int | None) -> bool:
+def _stop_bot_process(pid: Optional[int]) -> bool:
     if not pid:
         return True
     try:
@@ -134,7 +135,7 @@ def _import_bot_module():
         return None
 
 
-def _compute_series_indicators(df: pd.DataFrame) -> dict:
+def _compute_series_indicators(df: pd.DataFrame) -> Dict[str, pd.Series]:
     out: dict[str, pd.Series] = {}
     if df is None or df.empty:
         return out
@@ -160,14 +161,14 @@ def _compute_series_indicators(df: pd.DataFrame) -> dict:
     return out
 
 
-def _render_header(pid_running: bool, pid: int | None, symbol: str, timeframe: str) -> None:
+def _render_header(pid_running: bool, pid: Optional[int], symbol: str, timeframe: str) -> None:
     st.title("BinanceUS RSI Bot Dashboard")
     status_badge = "🟢 Running" if pid_running else "🔴 Stopped"
     st.caption(f"Status: {status_badge}{f' (PID {pid})' if pid_running and pid else ''}")
     st.caption(f"Symbol: {symbol} • Timeframe: {timeframe}")
 
 
-def _render_sidebar(pid_running: bool, pid: int | None, symbol: str, timeframe: str) -> tuple[str, str]:
+def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timeframe: str) -> Tuple[str, str]:
     with st.sidebar:
         st.header("Controls")
         st.subheader("Bot Settings")
