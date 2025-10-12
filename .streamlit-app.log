@@ -67,3 +67,13 @@ AttributeError: module 'streamlit' has no attribute 'experimental_rerun'
 2025-10-12 17:10:39,839 - INFO - Exchange configuration complete
 2025-10-12 17:10:39,839 - INFO - Bot config => SYMBOL=ETH/USDT, TIMEFRAME=1m
 2025-10-12 17:10:39,839 - INFO - Bot config => SYMBOL=ETH/USDT, TIMEFRAME=1m
+2025-10-12 17:18:41,502 - INFO - Loaded environment from /Users/will/Desktop/Code/Tradingbot/binanceus_creds.env
+2025-10-12 17:18:41,502 - INFO - Loaded environment from /Users/will/Desktop/Code/Tradingbot/binanceus_creds.env
+2025-10-12 17:18:41,503 - INFO - Trading bot started (updated version)
+2025-10-12 17:18:41,503 - INFO - Trading bot started (updated version)
+2025-10-12 17:18:41,920 - INFO - Exchange configuration complete
+2025-10-12 17:18:41,920 - INFO - Exchange configuration complete
+2025-10-12 17:18:41,921 - INFO - Bot config => SYMBOL=ETH/USDT, TIMEFRAME=1m
+2025-10-12 17:18:41,921 - INFO - Bot config => SYMBOL=ETH/USDT, TIMEFRAME=1m
+2025-10-12 17:18:41,921 - INFO - Paper trading: OFF
+2025-10-12 17:18:41,921 - INFO - Paper trading: OFF
