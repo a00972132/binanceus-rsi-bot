@@ -2,7 +2,7 @@ PY=.venv/bin/python
 PIP=.venv/bin/pip
 STREAMLIT=.venv/bin/streamlit
 
-.PHONY: venv install run start stop logs bot-start bot-stop bot-logs
+.PHONY: venv install run start stop logs bot-start bot-stop bot-logs clean clean-logs clean-pids clean-caches
 
 venv:
 	python3 -m venv .venv
@@ -50,3 +50,15 @@ bot-stop:
 
 bot-logs:
 	@tail -n 200 -f logs/trading_bot.out
+
+# Cleanup helpers
+clean-logs:
+	rm -f logs/* trading_bot.log .streamlit-app.log || true
+
+clean-pids:
+	rm -f run/* .streamlit-app.pid bot.pid || true
+
+clean-caches:
+	rm -rf __pycache__ */__pycache__ .mypy_cache .pytest_cache || true
+
+clean: clean-logs clean-pids clean-caches
