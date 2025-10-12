@@ -1,0 +1,31 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.pytest_cache/
+.coverage
+
+# Editors/IDEs
+.vscode/
+.idea/
+
+# Environment / Secrets
+.env
+*.env
+.streamlit/secrets.toml
+
+# App logs / pids
+.streamlit-app.log
+.streamlit-app.pid
+bot.pid
+trading_bot.log
+trading_bot.out
+
+# Builds
+dist/
+build/
+
