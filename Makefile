@@ -37,7 +37,7 @@ logs:
 
 # Start/stop the trading bot as a background process
 bot-start: prepare
-	. .venv/bin/activate && nohup $(PY) -u trade_bot/tradingbot_v2.py > logs/trading_bot.out 2>&1 & echo $$! > run/bot.pid && sleep 1 && echo "Started bot (pid $$(cat run/bot.pid))"
+	. .venv/bin/activate && nohup $(PY) -u trade_bot/trading_bot.py > logs/trading_bot.out 2>&1 & echo $$! > run/bot.pid && sleep 1 && echo "Started bot (pid $$(cat run/bot.pid))"
 
 bot-stop:
 	@if [ -f run/bot.pid ]; then \

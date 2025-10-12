@@ -1,0 +1,842 @@
+import ccxt
+import pandas as pd
+import time
+import logging
+import os
+from dotenv import load_dotenv
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from ta.trend import MACD, SMAIndicator
+from ta.momentum import RSIIndicator, StochasticOscillator
+from ta.volatility import BollingerBands, AverageTrueRange
+from collections import deque
+from typing import Tuple, Dict, Any, List, Optional, Union
+
+# Load environment variables (prefer BOT_ENV_FILE or project .env)
+ROOT_DIR = Path(__file__).resolve().parents[1]
+env_candidates = []
+if os.getenv('BOT_ENV_FILE'):
+    env_candidates.append(Path(os.getenv('BOT_ENV_FILE')))
+env_candidates.append(ROOT_DIR / '.env')
+env_candidates.append(Path("/Users/will/Desktop/Code/Tradingbot/binanceus_creds.env"))
+loaded_env = False
+for path in env_candidates:
+    try:
+        if path.exists():
+            load_dotenv(dotenv_path=str(path))
+            logging.info(f"Loaded environment from {path}")
+            loaded_env = True
+            break
+    except Exception:
+        pass
+if not loaded_env:
+    logging.warning("No environment file loaded; relying on process env variables.")
+
+# Configure Binance API Keys
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
+
+if not API_KEY or not API_SECRET:
+    logging.error("API keys not found. Exiting.")
+    raise SystemExit("Missing API keys")
+
+# Configure logging
+logging.getLogger().handlers = []  # Clear any existing handlers
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+# Add file handler with rotation
+LOG_DIR = ROOT_DIR / 'logs'
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+file_handler = RotatingFileHandler(
+    str(LOG_DIR / 'trading_bot.log'),
+    maxBytes=1024 * 1024,  # 1MB
+    backupCount=5
+)
+file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+logging.getLogger().addHandler(file_handler)
+
+# Add console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+logging.getLogger().addHandler(console_handler)
+
+logging.info("Trading bot started (updated version)")
+
+# Exchange Configuration
+exchange = ccxt.binanceus({
+    'apiKey': API_KEY,
+    'secret': API_SECRET,
+    'enableRateLimit': True,
+    'options': {'adjustForTimeDifference': True},
+})
+
+# Validate credentials and load markets
+exchange.check_required_credentials()
+exchange.load_markets()
+exchange.load_time_difference()
+exchange.fetch_time()
+logging.info("Exchange configuration complete")
+
+# Trading Parameters
+SYMBOL = os.getenv('BOT_SYMBOL', 'ETH/USDT')
+TIMEFRAME = os.getenv('BOT_TIMEFRAME', '1m')  # 1‑minute candles
+RSI_PERIOD = 14
+SMA_PERIOD = 50
+TRAILING_STOP_PERCENT = 0.08  # 8% trailing stop
+MIN_TRADE_INTERVAL = 30  # seconds between trades
+MAX_TRADES_PER_HOUR = 20  # trade frequency limit
+RISK_PER_TRADE = 0.05  # 5% of portfolio per trade (base risk)
+TAKE_PROFIT_LEVELS = [0.01, 0.02, 0.03]
+POSITION_SCALE_OUT = [0.3, 0.3, 0.4]
+
+# Log selected symbol/timeframe for visibility
+logging.info(f"Bot config => SYMBOL={SYMBOL}, TIMEFRAME={TIMEFRAME}")
+
+# ML Model Parameters
+FEATURE_WINDOW = 20
+PREDICTION_THRESHOLD = 0.65
+MODEL_RETRAIN_INTERVAL_DEFAULT = 1000  # default retrain frequency
+
+class MarketRegime:
+    TRENDING = 'TRENDING'
+    RANGING = 'RANGING'
+    VOLATILE = 'VOLATILE'
+    UNKNOWN = 'UNKNOWN'
+
+
+class PredictiveTrader:
+    def __init__(self):
+        self.scaler = StandardScaler()
+        self.model = RandomForestClassifier(n_estimators=100, random_state=42)
+        self.historical_data = deque(maxlen=5000)
+        self.last_train_size = 0
+
+    def prepare_features(self, df: pd.DataFrame) -> np.ndarray:
+        """Create feature matrix for the ML model."""
+        features = []
+        returns = df['close'].pct_change()
+        features.extend([
+            returns.rolling(window=5).mean(),
+            returns.rolling(window=5).std(),
+            (df['high'] - df['low']) / df['low'],
+            (df['close'] - df['open']) / df['open'],
+        ])
+        bb = BollingerBands(df['close'])
+        features.extend([
+            (df['close'] - bb.bollinger_lband()) /
+            (bb.bollinger_hband() - bb.bollinger_lband()),
+            df['volume'].rolling(window=5).mean() /
+            df['volume'].rolling(window=20).mean(),
+        ])
+        features.extend([
+            df['close'].rolling(window=10).mean(),
+            df['close'].rolling(window=50).mean(),
+            df['volume'].rolling(window=10).std(),
+            (df['close'] - df['close'].rolling(window=10).mean()) /
+            df['close'].rolling(window=10).std(),
+        ])
+        
+        # Combine features into a matrix
+        feature_matrix = np.column_stack(features)
+        
+        # Handle NaN values by replacing them with 0 or using an imputer
+        feature_matrix = np.nan_to_num(feature_matrix, nan=0.0)
+        
+        return feature_matrix
+
+    def prepare_labels(self, df: pd.DataFrame) -> np.ndarray:
+        """Create binary labels for price direction (1 for up, 0 for down)."""
+        future_returns = df['close'].shift(-1).pct_change()
+        return (future_returns > 0).astype(int)
+
+    def train_model(self, df: pd.DataFrame) -> bool:
+        """Train the ML model using available data."""
+        if len(df) < FEATURE_WINDOW + 10:
+            return False
+        X = self.prepare_features(df)
+        y = self.prepare_labels(df)
+        valid_idx = ~np.isnan(X).any(axis=1) & ~np.isnan(y)
+        X = X[valid_idx]
+        y = y[valid_idx]
+        if len(X) < 100:
+            return False
+        X = self.scaler.fit_transform(X)
+        # Exclude the last data point since it has no future label
+        self.model.fit(X[:-1], y[:-1])
+        return True
+
+    def predict_direction(self, df: pd.DataFrame) -> float:
+        """Return the probability of price moving up in the next candle."""
+        try:
+            X = self.prepare_features(df.tail(FEATURE_WINDOW))
+            # Handle NaN values
+            if np.isnan(X).any():
+                # Replace NaN with 0 for features
+                X = np.nan_to_num(X, nan=0.0)
+            X = self.scaler.transform(X)
+            # Double check for NaNs after transformation
+            if np.isnan(X).any():
+                logging.warning("NaN values detected after scaling. Using default probability.")
+                return 0.5
+            probabilities = self.model.predict_proba(X[-1:])
+            return probabilities[0][1]
+        except Exception as e:
+            logging.error(f"Error in predict_direction: {str(e)}")
+            return 0.5
+
+
+class RiskManager:
+    def __init__(self, max_drawdown: float = 0.15, max_position_size: float = 0.3):
+        self.max_drawdown = max_drawdown
+        self.max_position_size = max_position_size
+        self.peak_balance = 0.0
+        self.current_drawdown = 0.0
+        self.daily_loss = 0.0
+        self.daily_trades = 0
+        self.last_trade_day = None
+
+    def update_metrics(self, current_balance_usd: float):
+        """
+        Update peak balance and drawdown based on total portfolio value in USD.
+        Also resets daily metrics when a new day starts.
+        """
+        if current_balance_usd > self.peak_balance:
+            self.peak_balance = current_balance_usd
+        if self.peak_balance > 0:
+            self.current_drawdown = (
+                self.peak_balance - current_balance_usd
+            ) / self.peak_balance
+        # Reset daily metrics on a new day
+        current_day = time.strftime('%Y-%m-%d')
+        if current_day != self.last_trade_day:
+            self.daily_loss = 0.0
+            self.daily_trades = 0
+            self.last_trade_day = current_day
+
+    def can_trade(self, current_balance_usd: float, proposed_position_size: float, price: float) -> bool:
+        """
+        Determine whether a new position should be opened based on drawdown,
+        position sizing, and daily trade limits.
+        """
+        if self.current_drawdown >= self.max_drawdown:
+            logging.warning(
+                f"Max drawdown reached: {self.current_drawdown:.2%}")
+            return False
+        position_value = abs(proposed_position_size) * price
+        if current_balance_usd == 0:
+            return False
+        if position_value / current_balance_usd > self.max_position_size:
+            logging.warning(
+                f"Position size too large: {(position_value / current_balance_usd):.2%}")
+            return False
+        # Stop trading if daily losses exceed 5%
+        if self.daily_loss < -0.05:
+            logging.warning(
+                f"Daily loss limit reached: {self.daily_loss:.2%}")
+            return False
+        if self.daily_trades >= MAX_TRADES_PER_HOUR * 24:
+            logging.warning("Daily trade limit reached")
+            return False
+        return True
+
+    def update_trade_result(self, profit_loss: float) -> None:
+        self.daily_loss += profit_loss
+        self.daily_trades += 1
+
+
+# Initialize tracking variables
+last_trade_time = 0.0
+trade_count = 0
+last_trade_hour = time.strftime('%H')
+highest_balance = 0.0
+
+
+def retry_api_call(api_func, retries: int = 3, delay: int = 2):
+    for attempt in range(retries):
+        try:
+            return api_func()
+        except ccxt.NetworkError as e:
+            logging.warning(
+                f"Network error: {e}. Retrying in {delay} s...")
+        except ccxt.ExchangeError as e:
+            logging.warning(
+                f"Exchange error: {e}. Retrying in {delay} s...")
+        except Exception as e:
+            logging.error(f"Unexpected error: {e}")
+            return None
+        time.sleep(delay * (2 ** attempt))
+    return None
+
+
+def fetch_data():
+    """Fetch OHLCV data and return as a DataFrame."""
+    try:
+        data = retry_api_call(lambda: pd.DataFrame(
+            exchange.fetch_ohlcv(
+                SYMBOL, timeframe=TIMEFRAME, limit=1000),
+            columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        ))
+        if data is not None and not data.empty:
+            data['timestamp'] = pd.to_datetime(data['timestamp'], unit='ms')
+            data.set_index('timestamp', inplace=True)
+        else:
+            logging.warning("Fetched data is empty.")
+        return data
+    except ccxt.BaseError as e:
+        logging.error(f"Exchange error while fetching data: {str(e)}")
+        return None
+    except FileNotFoundError as e:
+        logging.error(f"File error: {str(e)}")
+        return None
+    except Exception as e:
+        logging.error(f"Unexpected error fetching data: {str(e)}")
+        return None
+
+
+def fetch_balance():
+    return retry_api_call(lambda: exchange.fetch_balance())
+
+
+def fetch_ticker_price():
+    price_data = retry_api_call(lambda: exchange.fetch_ticker(SYMBOL))
+    return price_data.get('last', 0) if price_data else 0
+
+
+def calculate_rsi(df: pd.DataFrame, period: int = 14) -> float:
+    try:
+        delta = df['close'].diff()
+        up = delta.clip(lower=0)
+        down = -1 * delta.clip(upper=0)
+        ema_up = up.ewm(com=period - 1, adjust=False).mean()
+        ema_down = down.ewm(com=period - 1, adjust=False).mean()
+        rs = ema_up / ema_down
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.iloc[-1]
+    except Exception as e:
+        logging.error(f"Error calculating RSI: {str(e)}")
+        return 50.0
+
+
+def calculate_sma(df: pd.DataFrame, period: int = 200) -> float:
+    try:
+        return df['close'].rolling(window=period).mean().iloc[-1]
+    except Exception as e:
+        logging.error(f"Error calculating SMA: {str(e)}")
+        return df['close'].iloc[-1]
+
+
+def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
+    try:
+        df_tmp = df.copy()
+        df_tmp['prev_close'] = df_tmp['close'].shift(1)
+        tr1 = df_tmp['high'] - df_tmp['low']
+        tr2 = (df_tmp['high'] - df_tmp['prev_close']).abs()
+        tr3 = (df_tmp['low'] - df_tmp['prev_close']).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1 / period, adjust=False).mean().iloc[-1]
+        return atr
+    except Exception as e:
+        logging.error(f"Error calculating ATR: {str(e)}")
+        return max((df['high'].iloc[-1] - df['low'].iloc[-1]) * 0.1, 1e-6)
+
+
+def calculate_macd(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
+    """Calculate MACD and signal line for the given DataFrame."""
+    try:
+        macd_line = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
+        signal_line = macd_line.ewm(span=9).mean()
+        return macd_line, signal_line
+    except Exception as e:
+        logging.error(f"Error calculating MACD: {str(e)}")
+        zeros = pd.Series([0] * len(df), index=df.index)
+        return zeros, zeros
+
+
+def calculate_volume_ma(df: pd.DataFrame, period: int = 20) -> float:
+    return df['volume'].rolling(window=period).mean().iloc[-1]
+
+
+def check_trend(df: pd.DataFrame, sma_val: float, price: float) -> bool:
+    return (price > sma_val and df['close'].iloc[-1] > df['close'].iloc[-2])
+
+
+def check_volume(df: pd.DataFrame) -> bool:
+    current_volume = df['volume'].iloc[-1]
+    avg_volume = df['volume'].rolling(window=20).mean().iloc[-1]
+    return current_volume > avg_volume * 1.2
+
+
+def get_trade_size(balance: dict, price: float, atr: float,
+                   rsi_val: float = 50.0, momentum_score_val: float = 1.0) -> float:
+    """
+    Compute the position size in ETH based on risk and momentum.
+    Uses the total account value in USD and adjusts position size based on
+    momentum score. Returns 0 if price or atr is invalid.
+    """
+    if price <= 0 or atr <= 0:
+        return 0.0
+    # Extract free balances
+    eth_free = balance['free'].get('ETH', 0.0)
+    usdt_free = balance['free'].get('USDT', 0.0)
+    eth_value_usd = eth_free * price
+    total_account_value_usd = eth_value_usd + usdt_free
+    risk_amount = total_account_value_usd * RISK_PER_TRADE
+    if abs(rsi_val - 50) > 20:
+        risk_amount *= 1.5
+    stop_distance_usd = atr * price * 0.8
+    if stop_distance_usd <= 0:
+        return 0.0
+    trade_size_eth = risk_amount / stop_distance_usd
+    min_notional = 10.0
+    if trade_size_eth * price < min_notional:
+        trade_size_eth = min_notional / price
+    # Use momentum score to scale size
+    if momentum_score_val > 1.5:
+        trade_size_eth *= 1.2
+    return max(trade_size_eth, 0.0)
+
+
+def get_order_book_spread():
+    order_book = retry_api_call(lambda: exchange.fetch_order_book(SYMBOL))
+    if not order_book:
+        return None, None, None
+    bids = order_book['bids']
+    asks = order_book['asks']
+    if not bids or not asks:
+        return None, None, None
+    bid_price = bids[0][0]
+    ask_price = asks[0][0]
+    spread = ask_price - bid_price
+    return bid_price, ask_price, spread
+
+
+def log_trade_metrics(side: str, trade_size: float, price: float, indicators: dict) -> None:
+    logging.info(f"""
+====== TRADE EXECUTED ======
+Side: {side.upper()}
+Size: {trade_size:.6f} ETH
+Price: ${price:.2f}
+Notional: ${(trade_size * price):.2f}
+
+Indicators:
+- RSI: {indicators['rsi']:.2f}
+- MACD: {indicators['macd']:.6f}
+- Signal: {indicators['signal']:.6f}
+- Volume MA Ratio: {indicators['volume_ratio']:.2f}
+==========================
+""")
+
+
+def place_order(side: str, trade_size: float, current_price: float,
+                df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    """
+    Place a market order while respecting rate limits, spread thresholds, and
+    daily trade limits. Requires the current price and latest data frame
+    for logging indicators.
+    """
+    global last_trade_time, trade_count, last_trade_hour
+    now = time.time()
+    # Respect the minimum trade interval
+    if (now - last_trade_time) < MIN_TRADE_INTERVAL:
+        logging.warning("Trade interval too short, skipping.")
+        return None
+    current_hour = time.strftime('%H')
+    if current_hour != last_trade_hour:
+        trade_count = 0
+        last_trade_hour = current_hour
+    if trade_count >= MAX_TRADES_PER_HOUR:
+        logging.warning("Reached max trades per hour, skipping trade.")
+        return None
+    bid_price, ask_price, spread = get_order_book_spread()
+    if spread is None or ask_price is None or ask_price == 0:
+        logging.warning("Could not fetch valid order book. Skipping trade.")
+        return None
+    spread_percentage = (spread / ask_price) * 100
+    regime = detect_market_regime(df)
+    max_spread_percentage = 0.2 if regime == MarketRegime.VOLATILE else 0.1
+    if spread_percentage > max_spread_percentage:
+        logging.warning(
+            f"Spread too high ({spread_percentage:.2f}%). Skipping trade.")
+        return None
+    try:
+        order = exchange.create_market_order(
+            SYMBOL, side, abs(trade_size))
+        last_trade_time = now
+        trade_count += 1
+        log_trade_metrics(side, trade_size, current_price, {
+            'rsi': calculate_rsi(df, RSI_PERIOD),
+            'macd': calculate_macd(df)[0].iloc[-1],
+            'signal': calculate_macd(df)[1].iloc[-1],
+            'volume_ratio': df['volume'].iloc[-1] / calculate_volume_ma(df)
+        })
+        return order
+    except ccxt.InsufficientFunds as e:
+        logging.error(f"Insufficient funds for {side} order: {e}")
+    except ccxt.InvalidOrder as e:
+        logging.error(f"Invalid order parameters: {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error in order placement: {e}")
+    return None
+
+
+def check_profit_loss(current_price: float) -> None:
+    global highest_balance
+    balance = fetch_balance()
+    if not balance:
+        logging.warning("Balance data unavailable. Skipping trailing stop check.")
+        return
+    eth_total = balance['total'].get('ETH', 0.0)
+    usdt_total = balance['total'].get('USDT', 0.0)
+    eth_value_usd = eth_total * current_price
+    overall_portfolio_usd = usdt_total + eth_value_usd
+    if overall_portfolio_usd > highest_balance:
+        highest_balance = overall_portfolio_usd
+    if overall_portfolio_usd <= highest_balance * (1 - TRAILING_STOP_PERCENT):
+        logging.warning("Trailing stop triggered. Exiting bot.")
+        raise SystemExit("Trailing stop reached")
+
+
+def manage_take_profits(current_position: float, entry_price: float, current_price: float,
+                        df: pd.DataFrame) -> float:
+    """
+    Determine how much of the current position to sell based on take‑profit
+    levels and market regime. Returns the quantity of ETH to sell.
+    """
+    if current_position <= 0 or entry_price <= 0:
+        return 0.0
+    price_change = (current_price - entry_price) / entry_price
+    # Local take‑profit levels based on market regime
+    regime = detect_market_regime(df)
+    if regime == MarketRegime.TRENDING:
+        tp_levels = [level * 2 for level in TAKE_PROFIT_LEVELS]
+    elif regime == MarketRegime.RANGING:
+        tp_levels = TAKE_PROFIT_LEVELS
+    elif regime == MarketRegime.VOLATILE:
+        tp_levels = [level * 1.5 for level in TAKE_PROFIT_LEVELS]
+    else:
+        tp_levels = TAKE_PROFIT_LEVELS
+    for level, scale_out in zip(tp_levels, POSITION_SCALE_OUT):
+        if price_change >= level:
+            amount_to_sell = current_position * scale_out
+            logging.info(
+                f"Take profit triggered at {level * 100:.2f}%, selling {scale_out * 100:.2f}% of position")
+            return amount_to_sell
+    return 0.0
+
+
+def calculate_momentum_score(df: pd.DataFrame) -> float:
+    rsi = calculate_rsi(df)
+    rsi_score = abs(rsi - 50) / 50
+    price_change = (df['close'].iloc[-1] - df['close'].iloc[-5]) / df['close'].iloc[-5]
+    price_score = min(abs(price_change), 1.0)
+    vol_avg = df['volume'].rolling(10).mean().iloc[-1]
+    # Add check for zero volume average
+    vol_score = 0.0
+    if vol_avg > 0:
+        vol_score = min(df['volume'].iloc[-1] / vol_avg, 2.0) - 1.0
+    return max((rsi_score + price_score + max(0.0, vol_score)) / 1.5, 0.0)
+
+
+def should_reenter_position(df: pd.DataFrame, last_exit_price: float, current_price: float,
+                            side: str = 'buy') -> bool:
+    if side == 'buy':
+        return (current_price < last_exit_price * 0.995 and
+                calculate_momentum_score(df) > 1.2)
+    else:
+        return (current_price > last_exit_price * 1.005 and
+                calculate_momentum_score(df) > 1.2)
+
+
+def detect_market_regime(df: pd.DataFrame, window: int = 20) -> str:
+    returns = df['close'].pct_change()
+    volatility = returns.rolling(window=window).std()
+    atr = calculate_atr(df)
+    bb = BollingerBands(df['close'])
+    bb_width = (bb.bollinger_hband() - bb.bollinger_lband()) / bb.bollinger_mavg()
+    current_volatility = volatility.iloc[-1]
+    current_bb_width = bb_width.iloc[-1]
+    high_volatility = current_volatility > volatility.quantile(0.7)
+    wide_bb = current_bb_width > bb_width.quantile(0.7)
+    sma_short = df['close'].rolling(window=10).mean()
+    sma_long = df['close'].rolling(window=30).mean()
+    trend_strength = abs(sma_short.iloc[-1] - sma_long.iloc[-1]) / max(atr, 1e-6)
+    if high_volatility and wide_bb:
+        return MarketRegime.VOLATILE
+    elif trend_strength > 1.5:
+        return MarketRegime.TRENDING
+    elif trend_strength < 0.5:
+        return MarketRegime.RANGING
+    else:
+        return MarketRegime.UNKNOWN
+
+
+def adjust_parameters_for_regime(regime: str) -> dict:
+    """
+    Return adjusted risk parameters based on market regime without mutating
+    global constants. The calling function can choose to apply these values.
+    """
+    risk = RISK_PER_TRADE
+    trailing_stop = TRAILING_STOP_PERCENT
+    tp_levels = TAKE_PROFIT_LEVELS.copy()
+    if regime == MarketRegime.VOLATILE:
+        return {
+            'risk_per_trade': risk * 0.8,
+            'trailing_stop': trailing_stop * 1.5,
+            'take_profits': [level * 1.5 for level in tp_levels]
+        }
+    if regime == MarketRegime.TRENDING:
+        return {
+            'risk_per_trade': risk * 1.2,
+            'trailing_stop': trailing_stop * 1.2,
+            'take_profits': [level * 1.3 for level in tp_levels]
+        }
+    if regime == MarketRegime.RANGING:
+        return {
+            'risk_per_trade': risk * 0.9,
+            'trailing_stop': trailing_stop * 0.8,
+            'take_profits': [level * 0.7 for level in tp_levels]
+        }
+    return {
+        'risk_per_trade': risk,
+        'trailing_stop': trailing_stop,
+        'take_profits': tp_levels
+    }
+
+
+# Initialize components
+trader = PredictiveTrader()
+risk_manager = RiskManager()
+
+
+def run_bot():
+    global highest_balance
+    print("\n=== Trading Bot Starting ===")
+    print("Press Ctrl+C to stop the bot\n")
+    logging.info("=== Bot Session Started ===")
+    
+    # Initialize tracking variables
+    candle_count = 0  # Add candle_count initialization here
+    model_retrain_interval = MODEL_RETRAIN_INTERVAL_DEFAULT
+    current_position = 0.0
+    entry_price = 0.0
+    last_exit_price = 0.0
+    last_trade_side = None
+    
+    # Initial data fetch
+    print("Fetching initial market data...")
+    logging.info("Fetching initial market data...")
+    df = fetch_data()
+    if df is None or df.empty:
+        logging.error("Could not fetch initial data. Exiting.")
+        print("ERROR: Could not fetch initial data. Exiting.")
+        return
+
+    print(f"Successfully fetched {len(df)} candles")
+    print("Training initial ML model...")
+    
+    # Train initial model with retries
+    for attempt in range(3):
+        if trader.train_model(df):
+            logging.info("Initial ML model training successful.")
+            break
+        logging.warning(f"Initial training attempt {attempt + 1} failed. Retrying...")
+        time.sleep(5)
+    else:
+        logging.error("Initial model training failed after multiple attempts. Exiting.")
+        print("ERROR: Initial model training failed after multiple attempts. Exiting.")
+        return
+
+    print("\nBot is now running!")
+    print("Monitoring market conditions...\n")
+    
+    iteration = 0
+    while True:
+        try:
+            iteration += 1
+            if iteration % 10 == 0:  # Every 10 iterations
+                print(f"\nIteration {iteration} - Current Status:")
+                price = fetch_ticker_price()
+                print(f"Current ETH Price: ${price:.2f}")
+                print(f"Last Analysis Time: {time.strftime('%H:%M:%S')}")
+
+            # Reset indicators each iteration
+            rsi_val = 50.0
+            sma_val = 0.0
+            macd_line = pd.Series([0])
+            signal_line = pd.Series([0])
+            atr_val = 0.0
+            trend_bullish = False
+            volume_confirmed = False
+            momentum_score = 0.0
+            up_probability = 0.5
+
+            # Fetch data and current price
+            df = fetch_data()
+            if df is None or df.empty:
+                logging.warning("No market data returned. Sleeping 60 s.")
+                time.sleep(60)
+                continue
+            price = fetch_ticker_price()
+            if price <= 0:
+                logging.warning("Invalid price received. Sleeping 60 s.")
+                time.sleep(60)
+                continue
+
+            # Calculate indicators
+            try:
+                rsi_val = calculate_rsi(df, RSI_PERIOD)
+                sma_val = calculate_sma(df, SMA_PERIOD)
+                macd_line, signal_line = calculate_macd(df)
+                atr_val = calculate_atr(df, 14)
+                trend_bullish = check_trend(df, sma_val, price)
+                volume_confirmed = check_volume(df)
+                momentum_score = calculate_momentum_score(df)
+                if iteration % 10 == 0:  # Every 10 iterations
+                    print(f"RSI: {rsi_val:.2f}")
+                    print(f"Trend: {'Bullish' if trend_bullish else 'Bearish'}")
+                    print(f"ML Up Probability: {up_probability:.2%}\n")
+            except Exception as e:
+                logging.error(f"Error calculating indicators: {e}")
+
+            # Retrain model periodically
+            candle_count += 1
+            if candle_count % model_retrain_interval == 0:
+                try:
+                    logging.info("Retraining ML model...")
+                    if trader.train_model(df):
+                        logging.info("ML model retrained successfully.")
+                    else:
+                        logging.warning("Insufficient data for retraining ML model.")
+                except Exception as e:
+                    logging.error(f"Error during ML model retraining: {str(e)}")
+
+            # Adjust retrain interval based on volatility
+            if detect_market_regime(df) == MarketRegime.VOLATILE:
+                model_retrain_interval = max(500, MODEL_RETRAIN_INTERVAL_DEFAULT // 2)
+            else:
+                model_retrain_interval = MODEL_RETRAIN_INTERVAL_DEFAULT
+
+            # Predict direction
+            try:
+                up_probability = trader.predict_direction(df)
+            except Exception as e:
+                logging.error(f"Error in price prediction: {e}")
+                up_probability = 0.5
+
+            # Fetch balance and compute portfolio value
+            try:
+                current_balance = fetch_balance()
+                if not current_balance:
+                    logging.warning("Could not fetch balance. Sleeping 60 s.")
+                    time.sleep(60)
+                    continue
+            except Exception as e:
+                logging.error(f"Error fetching balance: {e}")
+                time.sleep(60)
+                continue
+
+            eth_total = current_balance['total'].get('ETH', 0.0)
+            usdt_total = current_balance['total'].get('USDT', 0.0)
+            portfolio_value_usd = usdt_total + eth_total * price
+
+            # Update risk metrics
+            risk_manager.update_metrics(portfolio_value_usd)
+
+            # Copy base risk per trade and adjust for drawdown (local)
+            if risk_manager.current_drawdown < 0.05:
+                current_risk_per_trade = RISK_PER_TRADE * 1.1
+            elif risk_manager.current_drawdown > 0.1:
+                current_risk_per_trade = RISK_PER_TRADE * 0.8
+            else:
+                current_risk_per_trade = RISK_PER_TRADE
+
+            # Determine trade size
+            trade_size = get_trade_size(
+                current_balance, price, atr_val,
+                rsi_val=rsi_val, momentum_score_val=momentum_score
+            )
+
+            # Check risk manager before trading
+            if not risk_manager.can_trade(portfolio_value_usd, trade_size, price):
+                logging.info(
+                    f"Trade skipped due to risk management rules. "
+                    f"Drawdown: {risk_manager.current_drawdown:.2%}, "
+                    f"Daily Loss: {risk_manager.daily_loss:.2%}, "
+                    f"Position Size: {trade_size:.6f} ETH"
+                )
+                trade_size = 0.0
+
+            # Determine buy/sell signals
+            buy_signal = (
+                trade_size > 0 and
+                up_probability > PREDICTION_THRESHOLD and
+                rsi_val < 70 and
+                macd_line.iloc[-1] > signal_line.iloc[-1] and
+                (trend_bullish or volume_confirmed)
+            )
+            sell_signal = (
+                trade_size > 0 and
+                up_probability < (1 - PREDICTION_THRESHOLD) and
+                rsi_val > 30 and
+                macd_line.iloc[-1] < signal_line.iloc[-1] and
+                (not trend_bullish or volume_confirmed)
+            )
+
+            # Execute buy signal
+            if buy_signal:
+                logging.info(
+                    f"Buy signal detected (ML Prob: {up_probability:.2f})")
+                # Place order and ensure no pre‑existing long is counted as multiple
+                order = place_order('buy', trade_size, price, df)
+                if order:
+                    current_position += trade_size
+                    entry_price = price
+                    last_trade_side = 'buy'
+
+            # Execute sell signal (closing or scaling out)
+            elif sell_signal:
+                logging.info(
+                    f"Sell signal detected (ML Prob: {up_probability:.2f})")
+                # Only sell up to the size of current position
+                available_to_sell = current_balance['free'].get('ETH', 0.0)
+                sell_size = min(trade_size, available_to_sell)
+                if sell_size > 0:
+                    order = place_order('sell', sell_size, price, df)
+                    if order and entry_price > 0:
+                        profit_loss = (price - entry_price) / entry_price
+                        risk_manager.update_trade_result(profit_loss)
+                        last_exit_price = price
+                        last_trade_side = 'sell'
+                    # Decrease current position accordingly
+                    current_position = max(current_position - sell_size, 0.0)
+
+            # Manage take profits on open long position
+            if current_position > 0:
+                tp_amount = manage_take_profits(
+                    current_position, entry_price, price, df)
+                if tp_amount > 0:
+                    order = place_order('sell', tp_amount, price, df)
+                    if order:
+                        current_position = max(current_position - tp_amount, 0.0)
+                        logging.info(
+                            f"Take profit executed, remaining position: {current_position:.6f} ETH")
+
+            # Check trailing stop
+            check_profit_loss(price)
+            time.sleep(MIN_TRADE_INTERVAL)
+        except SystemExit as stop:
+            logging.warning(str(stop))
+            break
+        except Exception as e:
+            logging.error(f"Error in main loop: {e}")
+            time.sleep(60)
+
+
+if __name__ == '__main__':
+    run_bot()

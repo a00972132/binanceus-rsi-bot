@@ -17,9 +17,9 @@ except Exception:  # pragma: no cover
     st_autorefresh = None  # fallback
 
 
-# Paths and constants
 REPO_DIR = Path(__file__).parent
-BOT_MODULE_PATH = REPO_DIR / "trade_bot" / "tradingbot_v2.py"
+# Paths and constants
+BOT_MODULE_PATH = REPO_DIR / "trade_bot" / "trading_bot.py"
 LOG_PATH = REPO_DIR / "logs" / "trading_bot.log"
 PID_PATH = REPO_DIR / "run" / "bot.pid"
 
@@ -137,7 +137,7 @@ def _stop_bot_process(pid: Optional[int]) -> bool:
 def _import_bot_module():
     try:
         # Local import to avoid heavy module at global scope
-        from trade_bot import tradingbot_v2 as bot
+        from trade_bot import trading_bot as bot
         return bot
     except Exception as e:
         st.error(
