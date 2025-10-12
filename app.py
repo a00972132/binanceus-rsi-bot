@@ -367,55 +367,101 @@ def main():
             latest_macd = float(macd_line.iloc[-1])
             latest_signal = float(signal_line.iloc[-1])
 
-            # Criteria (buy side)
+            # Try to compute ML probability (train quickly in UI context)
+            up_prob = None
+            try:
+                if hasattr(bot, 'trader'):
+                    # safe train; ignore failures
+                    bot.trader.train_model(df)
+                    up_prob = float(bot.trader.predict_direction(df))
+            except Exception:
+                up_prob = None
+
+            # Criteria thresholds
             rsi_buy_max = float(getattr(bot, 'RSI_BUY_MAX', 70.0))
-            rsi_ok = rsi_val < rsi_buy_max
+            rsi_sell_min = float(getattr(bot, 'RSI_SELL_MIN', 30.0))
+            pred_thresh = float(getattr(bot, 'PREDICTION_THRESHOLD', 0.65))
+            confirms_required_buy = int(getattr(bot, 'CONFIRMATIONS_REQUIRED_BUY', 2))
+            confirms_required_sell = int(getattr(bot, 'CONFIRMATIONS_REQUIRED_SELL', 2))
+
+            # Signals/confirmations
+            macd_up = latest_macd > latest_signal
+            macd_down = latest_macd < latest_signal
             try:
                 trend_bullish = bool(bot.check_trend(df, sma_val, price))
             except Exception:
                 trend_bullish = bool(price > sma_val)
+            trend_bearish = not trend_bullish
             try:
                 volume_confirmed = bool(bot.check_volume(df))
             except Exception:
                 volume_confirmed = False
-            macd_up = latest_macd > latest_signal
-            confirms_required = int(getattr(bot, 'CONFIRMATIONS_REQUIRED_BUY', 2))
-            confirms_met = int(sum(1 for c in [macd_up, trend_bullish, volume_confirmed] if c))
-            confirms_ok = confirms_met >= confirms_required
+
+            # Confirmations count
+            confs_buy_met = int(sum(1 for c in [macd_up, trend_bullish, volume_confirmed] if c))
+            confs_sell_met = int(sum(1 for c in [macd_down, trend_bearish, volume_confirmed] if c))
 
             # Helpers for color
             def colorize(text: str, ok: bool) -> str:
                 color = "#16a34a" if ok else "#dc2626"  # green/red
                 return f"<span style='color:{color};font-weight:600'>{text}</span>"
 
-            cols2 = st.columns(4)
-            with cols2[0]:
+            # ML probability badge
+            ml_ok_buy = (up_prob is not None) and (up_prob > pred_thresh)
+            ml_ok_sell = (up_prob is not None) and (up_prob < (1 - pred_thresh))
+            ml_text = "N/A" if up_prob is None else f"{up_prob:.2f}"
+            st.markdown(
+                f"Model up-prob: {colorize(ml_text + ' vs ' + str(round(pred_thresh,2)), ml_ok_buy)}",
+                unsafe_allow_html=True,
+            )
+
+            # Buy and Sell panels side-by-side
+            bc, sc = st.columns(2)
+            with bc:
+                st.caption("Buy Criteria")
                 st.markdown(
-                    f"RSI(14): {colorize(f'{rsi_val:.2f} < {rsi_buy_max:.0f}', rsi_ok)}",
+                    f"RSI(14): {colorize(f'{rsi_val:.2f} < {rsi_buy_max:.0f}', rsi_val < rsi_buy_max)}",
                     unsafe_allow_html=True,
                 )
-            with cols2[1]:
                 st.markdown(
-                    f"SMA({sma_period}): {colorize(f'{sma_val:,.2f}', price > sma_val)}",
+                    f"Trend (Price>SMA{str(sma_period)}): {colorize(f'{price:,.2f} > {sma_val:,.2f}', price > sma_val)}",
                     unsafe_allow_html=True,
                 )
-            with cols2[2]:
                 st.markdown(
-                    f"MACD: {colorize(f'{latest_macd:.4f}', macd_up)}",
+                    f"MACD>Signal: {colorize(f'{latest_macd:.4f} > {latest_signal:.4f}', macd_up)}",
                     unsafe_allow_html=True,
                 )
-            with cols2[3]:
                 st.markdown(
-                    f"Signal: {colorize(f'{latest_signal:.4f}', macd_up)}",
+                    f"Volume boost: {colorize('True' if volume_confirmed else 'False', volume_confirmed)}",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f"Confirmations: {colorize(f'{confs_buy_met}/{confirms_required_buy}', confs_buy_met >= confirms_required_buy)}",
                     unsafe_allow_html=True,
                 )
 
-            # Confirmations summary
-            st.caption(
-                f"Confirmations (MACD up, Trend, Volume): "
-                f"{colorize(f'{confirms_met}/{confirms_required}', confirms_ok)}",
-                unsafe_allow_html=True,
-            )
+            with sc:
+                st.caption("Sell Criteria")
+                st.markdown(
+                    f"RSI(14): {colorize(f'{rsi_val:.2f} > {rsi_sell_min:.0f}', rsi_val > rsi_sell_min)}",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f"Trend (Price<SMA{str(sma_period)}): {colorize(f'{price:,.2f} < {sma_val:,.2f}', price < sma_val)}",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f"MACD<Signal: {colorize(f'{latest_macd:.4f} < {latest_signal:.4f}', macd_down)}",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f"Volume boost: {colorize('True' if volume_confirmed else 'False', volume_confirmed)}",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f"Confirmations: {colorize(f'{confs_sell_met}/{confirms_required_sell}', confs_sell_met >= confirms_required_sell)}",
+                    unsafe_allow_html=True,
+                )
         except Exception:
             pass
     else:
