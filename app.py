@@ -11,8 +11,8 @@ import pandas as pd
 import streamlit as st
 
 try:
-    # Available in Streamlit >=1.18
-    from streamlit import st_autorefresh  # type: ignore
+    # Provided by streamlit-autorefresh package
+    from streamlit_autorefresh import st_autorefresh  # type: ignore
 except Exception:  # pragma: no cover
     st_autorefresh = None  # fallback
 
@@ -215,9 +215,11 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
 
         st.divider()
         st.subheader("Refresh")
-        refresh_sec = st.slider("Auto-refresh (sec)", 2, 30, 5, 1)
+        auto_enabled = st.checkbox("Auto-refresh", value=True)
+        refresh_sec = st.slider("Interval (sec)", 2, 30, 5, 1)
+        st.session_state["auto_refresh_enabled"] = auto_enabled
         st.session_state["refresh_sec"] = refresh_sec
-        st.caption("Page refreshes to update price, balances, and logs.")
+        st.caption("Auto-refresh updates price, balances, and logs.")
 
         st.divider()
         st.subheader("Paths")
@@ -229,9 +231,10 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
 def main():
     # Keep a lightweight periodic refresh (if available)
     refresh_sec = st.session_state.get("refresh_sec", 5)
+    auto_enabled = st.session_state.get("auto_refresh_enabled", True)
     try:
-        if st_autorefresh:
-            st_autorefresh(interval=int(refresh_sec * 1000), key="auto_refresh")
+        if auto_enabled and st_autorefresh:
+            st_autorefresh(interval=int(refresh_sec * 1000), key=f"auto_refresh_{refresh_sec}")
     except Exception:
         pass
 
