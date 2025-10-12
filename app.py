@@ -31,7 +31,7 @@ TIMEFRAME_OPTIONS = [
 ]
 
 
-@st.cache_data(show_spinner=False, ttl=2)
+@st.cache_data(show_spinner=False, ttl=1)
 def _read_log_tail(max_lines: int = 200) -> str:
     try:
         if not LOG_PATH.exists():
@@ -185,6 +185,10 @@ def _render_header(pid_running: bool, pid: Optional[int], symbol: str, timeframe
     except Exception:
         pass
     st.caption(f"Symbol: {symbol} • Timeframe: {timeframe} • Paper: {'On' if paper else 'Off'}")
+    col_a, col_b = st.columns([1, 3])
+    with col_a:
+        if st.button("Refresh now", use_container_width=True):
+            _safe_rerun()
 
 
 def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timeframe: str) -> Tuple[str, str]:
@@ -246,7 +250,7 @@ def main():
     auto_enabled = st.session_state.get("auto_refresh_enabled", True)
     try:
         if auto_enabled and st_autorefresh:
-            st_autorefresh(interval=int(refresh_sec * 1000), key=f"auto_refresh_{refresh_sec}")
+            st_autorefresh(interval=int(refresh_sec * 1000), limit=None, key="auto_refresh")
         elif auto_enabled:
             # HTML meta refresh fallback if plugin unavailable
             st.markdown(
