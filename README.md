@@ -46,6 +46,8 @@ An organized, easy-to-run trading bot project with a Streamlit dashboard, safe c
 - `BOT_TIMEFRAME`: Candle timeframe (e.g., `1m`, `5m`, `1h`)
 - `BOT_ENV_FILE`: Absolute path to a `.env` file to load
 - `BOT_PAPER_TRADING`: Set to `true` to simulate orders (no live trades)
+- `BOT_LOG_LEVEL`: `DEBUG` | `INFO` | `WARNING` (default `INFO`)
+- `BOT_DIAGNOSTICS`: `true` to include skip‑reason logs at INFO (else DEBUG only)
 
 ## Logs and PIDs
 

@@ -43,28 +43,24 @@ if not API_KEY or not API_SECRET:
     logging.error("API keys not found. Exiting.")
     raise SystemExit("Missing API keys")
 
-# Configure logging
-logging.getLogger().handlers = []  # Clear any existing handlers
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-
-# Add file handler with rotation
+# Configure logging (single root, no duplicates)
+LOG_LEVEL = os.getenv("BOT_LOG_LEVEL", "INFO").upper()
+level_num = getattr(logging, LOG_LEVEL, logging.INFO)
 LOG_DIR = ROOT_DIR / 'logs'
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-file_handler = RotatingFileHandler(
-    str(LOG_DIR / 'trading_bot.log'),
-    maxBytes=1024 * 1024,  # 1MB
-    backupCount=5
-)
-file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-logging.getLogger().addHandler(file_handler)
 
-# Add console handler
+root_logger = logging.getLogger()
+root_logger.handlers.clear()
+root_logger.setLevel(level_num)
+fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+file_handler = RotatingFileHandler(str(LOG_DIR / 'trading_bot.log'), maxBytes=1024 * 1024, backupCount=5)
+file_handler.setFormatter(fmt)
+root_logger.addHandler(file_handler)
+
 console_handler = logging.StreamHandler()
-console_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-logging.getLogger().addHandler(console_handler)
+console_handler.setFormatter(fmt)
+root_logger.addHandler(console_handler)
 
 logging.info("Trading bot started (updated version)")
 
@@ -119,7 +115,7 @@ MAX_TRADES_PER_HOUR = int(os.getenv('BOT_MAX_TRADES_PER_HOUR', str({'conservativ
 
 # Log selected symbol/timeframe for visibility
 logging.info(f"Bot config => SYMBOL={SYMBOL}, TIMEFRAME={TIMEFRAME}")
-logging.info(f"Paper trading: {'ON' if PAPER_TRADING else 'OFF'}")
+logging.info(f"Paper trading: {'ON' if PAPER_TRADING else 'OFF'} | Log level: {LOG_LEVEL}")
 logging.info(
     "Tuning => aggr=%s, pred_thresh=%.2f, conf_buy=%d, conf_sell=%d, "
     "spread(normal=%.2f%%, vol=%.2f%%), min_interval=%ss, max_trades/hr=%s",
@@ -875,12 +871,16 @@ def run_bot():
 
             # Check risk manager before trading
             if not risk_manager.can_trade(portfolio_value_usd, trade_size, price):
-                logging.info(
-                    f"Trade skipped due to risk management rules. "
-                    f"Drawdown: {risk_manager.current_drawdown:.2%}, "
-                    f"Daily Loss: {risk_manager.daily_loss:.2%}, "
-                    f"Position Size: {trade_size:.6f} ETH"
+                msg = (
+                    f"Trade skipped due to risk rules | "
+                    f"Drawdown={risk_manager.current_drawdown:.2%}, "
+                    f"DailyLoss={risk_manager.daily_loss:.2%}, "
+                    f"Size={trade_size:.6f} ETH"
                 )
+                if os.getenv('BOT_DIAGNOSTICS', 'false').lower() in ('1','true','yes','y'):
+                    logging.info(msg)
+                else:
+                    logging.debug(msg)
                 trade_size = 0.0
 
             # Determine buy/sell signals (tunable confirmations)
@@ -912,18 +912,22 @@ def run_bot():
                 if trade_size <= 0:
                     reasons.append("size<=0")
                 if up_probability <= PREDICTION_THRESHOLD and up_probability >= (1 - PREDICTION_THRESHOLD):
-                    reasons.append(f"ml_prob={up_probability:.2f} below/near threshold")
+                    reasons.append(f"ml_prob={up_probability:.2f} near threshold")
                 if rsi_val >= RSI_BUY_MAX:
                     reasons.append(f"rsi_buy_gate (RSI={rsi_val:.1f} >= {RSI_BUY_MAX})")
                 if rsi_val <= RSI_SELL_MIN:
                     reasons.append(f"rsi_sell_gate (RSI={rsi_val:.1f} <= {RSI_SELL_MIN})")
                 if not confirmations_ok_buy and not confirmations_ok_sell:
                     reasons.append(
-                        f"confirmations buy/sell not met (buy={confirmations_met_buy}/{CONFIRMATIONS_REQUIRED_BUY}, "
+                        f"confirmations unmet (buy={confirmations_met_buy}/{CONFIRMATIONS_REQUIRED_BUY}, "
                         f"sell={confirmations_met_sell}/{CONFIRMATIONS_REQUIRED_SELL})"
                     )
                 if reasons:
-                    logging.info("No trade this cycle: " + "; ".join(reasons))
+                    msg = "No trade: " + "; ".join(reasons)
+                    if os.getenv('BOT_DIAGNOSTICS', 'false').lower() in ('1','true','yes','y'):
+                        logging.info(msg)
+                    else:
+                        logging.debug(msg)
 
             # Execute buy signal
             if buy_signal:
