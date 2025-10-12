@@ -51,6 +51,18 @@ def _write_pid(pid: int) -> None:
         pass
 
 
+def _safe_rerun() -> None:
+    try:
+        # Streamlit 1.20+
+        st.rerun()
+    except Exception:
+        try:
+            # Older Streamlit
+            st.experimental_rerun()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
 def _read_pid() -> Optional[int]:
     try:
         if PID_PATH.exists():
@@ -187,12 +199,12 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
                 })
                 if new_pid:
                     st.session_state["bot_pid"] = new_pid
-                    st.experimental_rerun()
+                    _safe_rerun()
         with col2:
             if st.button("Stop Bot", disabled=not pid_running):
                 _stop_bot_process(pid)
                 st.session_state["bot_pid"] = None
-                st.experimental_rerun()
+                _safe_rerun()
 
         st.divider()
         st.subheader("Refresh")
