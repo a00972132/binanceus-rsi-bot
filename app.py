@@ -478,6 +478,54 @@ def main():
                 unsafe_allow_html=True,
             )
 
+            # Compact decision summary badge (Buy-leaning / Sell-leaning / Neutral)
+            buy_votes = 0
+            sell_votes = 0
+            # Model vote
+            if up_prob is not None:
+                if up_prob > pred_thresh:
+                    buy_votes += 1
+                elif up_prob < (1 - pred_thresh):
+                    sell_votes += 1
+            # RSI vote
+            if rsi_val < rsi_buy_max:
+                buy_votes += 1
+            if rsi_val > rsi_sell_min:
+                sell_votes += 1
+            # Trend vote
+            if price > sma_val:
+                buy_votes += 1
+            elif price < sma_val:
+                sell_votes += 1
+            # MACD vote
+            if macd_up:
+                buy_votes += 1
+            elif macd_down:
+                sell_votes += 1
+
+            score = buy_votes - sell_votes
+            # Also consider confirmations directly
+            buy_ok = (confs_buy_met >= confirms_required_buy) and (up_prob is None or up_prob > pred_thresh)
+            sell_ok = (confs_sell_met >= confirms_required_sell) and (up_prob is None or up_prob < (1 - pred_thresh))
+
+            def pill(text: str, state: str) -> str:
+                if state == 'buy':
+                    bg, fg = '#16a34a', '#ffffff'  # green
+                elif state == 'sell':
+                    bg, fg = '#dc2626', '#ffffff'  # red
+                else:
+                    bg, fg = '#f59e0b', '#111111'  # yellow
+                return f"<span style='background-color:{bg};color:{fg};padding:4px 10px;border-radius:999px;font-weight:700'>{text}</span>"
+
+            if score >= 2 or buy_ok:
+                summary = pill('Buy leaning', 'buy')
+            elif score <= -2 or sell_ok:
+                summary = pill('Sell leaning', 'sell')
+            else:
+                summary = pill('Neutral', 'neutral')
+
+            st.markdown(f"Decision Summary: {summary}", unsafe_allow_html=True)
+
             # Buy and Sell panels side-by-side
             bc, sc = st.columns(2)
             with bc:
