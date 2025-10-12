@@ -238,11 +238,6 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
         st.caption("Auto-refresh updates price, balances, and logs.")
 
         st.divider()
-        st.subheader("Paths")
-        st.code(str(BOT_MODULE_PATH), language="bash")
-        st.code(str(LOG_PATH), language="bash")
-
-        st.divider()
         st.subheader("Logs")
         log_lines = st.slider("Show last lines", 20, 1000, 200, 10)
         newest_first = st.checkbox("Newest first", value=True)
