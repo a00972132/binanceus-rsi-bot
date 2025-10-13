@@ -202,58 +202,77 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
         st.caption("Settings apply when you start the bot. Restart to take effect.")
 
         st.subheader("Strategy Tuning")
-        # Defaults for RSI thresholds
-        try:
-            from trade_bot import trading_bot as _bot_mod
-            default_buy_rsi = float(getattr(_bot_mod, 'RSI_BUY_MAX', 40.0))
-            default_sell_rsi = float(getattr(_bot_mod, 'RSI_SELL_MIN', 60.0))
-        except Exception:
-            default_buy_rsi, default_sell_rsi = 40.0, 60.0
-        aggr = st.selectbox("Aggressiveness", ["conservative", "balanced", "aggressive"], index=1,
-                             help="Drives thresholds and trade frequency")
-        threshold = st.slider("Model threshold", 0.50, 0.80, 0.65, 0.01,
-                              help="Minimum ML up-probability to consider a buy (sell uses 1-threshold)")
-        confirms = st.slider("Confirmations required", 1, 3, 2,
-                             help="Count among [MACD, trend, volume]")
+        # Presets by aggressiveness
+        presets = {
+            'conservative': {
+                'threshold': 0.70, 'confirms': 3,
+                'rsi_buy_max': 35.0, 'rsi_sell_min': 65.0,
+                'spread_normal': 0.10, 'spread_volatile': 0.18,
+                'min_interval': 45, 'max_trades_per_hour': 12,
+            },
+            'balanced': {
+                'threshold': 0.65, 'confirms': 2,
+                'rsi_buy_max': 40.0, 'rsi_sell_min': 60.0,
+                'spread_normal': 0.12, 'spread_volatile': 0.22,
+                'min_interval': 30, 'max_trades_per_hour': 20,
+            },
+            'aggressive': {
+                'threshold': 0.58, 'confirms': 1,
+                'rsi_buy_max': 45.0, 'rsi_sell_min': 55.0,
+                'spread_normal': 0.15, 'spread_volatile': 0.25,
+                'min_interval': 20, 'max_trades_per_hour': 30,
+            },
+        }
+        # Initialize session tuning state once
+        if '_tuning_init' not in st.session_state:
+            st.session_state['aggr'] = 'balanced'
+            for k, v in presets['balanced'].items():
+                st.session_state[k] = v
+            st.session_state['_prev_aggr'] = 'balanced'
+            st.session_state['_tuning_init'] = True
+        # Aggressiveness selector with auto-apply presets
+        aggr = st.selectbox(
+            "Aggressiveness", ["conservative", "balanced", "aggressive"],
+            index=["conservative","balanced","aggressive"].index(st.session_state.get('aggr','balanced')),
+            help="Presets thresholds and trade cadence"
+        )
+        if st.session_state.get('_prev_aggr') != aggr:
+            for k, v in presets[aggr].items():
+                st.session_state[k] = v
+            st.session_state['aggr'] = aggr
+            st.session_state['_prev_aggr'] = aggr
+        # Threshold and confirmations (bound to session state)
+        st.slider("Model threshold", 0.50, 0.80, value=float(st.session_state['threshold']), step=0.01,
+                  help="Minimum ML up-probability to consider a buy (sell uses 1-threshold)", key='threshold')
+        st.slider("Confirmations required", 1, 3, value=int(st.session_state['confirms']),
+                  help="Count among [MACD, trend, volume]", key='confirms')
         colr1, colr2 = st.columns(2)
         with colr1:
-            rsi_buy_max = st.slider("RSI buy max", 20, 80, int(default_buy_rsi), 1,
-                                    help="Consider buys when RSI is below this")
+            st.slider("RSI buy max", 20, 80, value=int(st.session_state['rsi_buy_max']), step=1,
+                      help="Consider buys when RSI is below this", key='rsi_buy_max')
         with colr2:
-            rsi_sell_min = st.slider("RSI sell min", 20, 80, int(default_sell_rsi), 1,
-                                     help="Consider sells when RSI is above this")
-        # Save to session for the indicator panel
-        st.session_state['rsi_buy_max'] = float(rsi_buy_max)
-        st.session_state['rsi_sell_min'] = float(rsi_sell_min)
+            st.slider("RSI sell min", 20, 80, value=int(st.session_state['rsi_sell_min']), step=1,
+                      help="Consider sells when RSI is above this", key='rsi_sell_min')
 
         # Spread + cadence tuning
         st.caption("Execution guards")
         spc1, spc2 = st.columns(2)
-        # Defaults from bot (values are in percent, e.g., 0.12 means 0.12%)
-        try:
-            from trade_bot import trading_bot as _bot_mod2
-            def_sp_norm = float(getattr(_bot_mod2, 'MAX_SPREAD_PERCENT_NORMAL', 0.12))
-            def_sp_vol = float(getattr(_bot_mod2, 'MAX_SPREAD_PERCENT_VOLATILE', 0.22))
-            def_min_int = int(getattr(_bot_mod2, 'MIN_TRADE_INTERVAL', 30))
-            def_max_tph = int(getattr(_bot_mod2, 'MAX_TRADES_PER_HOUR', 20))
-        except Exception:
-            def_sp_norm, def_sp_vol, def_min_int, def_max_tph = 0.12, 0.22, 30, 20
         with spc1:
             spread_normal = st.slider(
-                "Max spread (normal) %", 0.05, 0.50, float(def_sp_norm), 0.01,
+                "Max spread (normal) %", 0.05, 0.50, value=float(st.session_state['spread_normal']), step=0.01,
                 help="Skip trades if order book spread is above this in normal regime"
             )
             min_interval = st.slider(
-                "Min trade interval (sec)", 5, 120, int(def_min_int), 1,
+                "Min trade interval (sec)", 5, 120, value=int(st.session_state['min_interval']), step=1,
                 help="Minimum seconds between trades"
             )
         with spc2:
             spread_volatile = st.slider(
-                "Max spread (volatile) %", 0.10, 0.80, float(def_sp_vol), 0.01,
+                "Max spread (volatile) %", 0.10, 0.80, value=float(st.session_state['spread_volatile']), step=0.01,
                 help="Skip trades if spread above this in volatile regime"
             )
             max_trades_per_hour = st.slider(
-                "Max trades per hour", 1, 60, int(def_max_tph), 1,
+                "Max trades per hour", 1, 60, value=int(st.session_state['max_trades_per_hour']), step=1,
                 help="Hard cap on trading frequency"
             )
         # Persist for UI reference
@@ -268,16 +287,16 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
                 new_pid = _start_bot_process({
                     'BOT_SYMBOL': symbol,
                     'BOT_TIMEFRAME': timeframe,
-                    'BOT_AGGRESSIVENESS': aggr,
-                    'BOT_PREDICTION_THRESHOLD': threshold,
-                    'BOT_CONFIRMATIONS_REQUIRED_BUY': confirms,
-                    'BOT_CONFIRMATIONS_REQUIRED_SELL': confirms,
-                    'BOT_RSI_BUY_MAX': rsi_buy_max,
-                    'BOT_RSI_SELL_MIN': rsi_sell_min,
-                    'BOT_MAX_SPREAD_PERCENT_NORMAL': spread_normal,
-                    'BOT_MAX_SPREAD_PERCENT_VOLATILE': spread_volatile,
-                    'BOT_MIN_TRADE_INTERVAL': min_interval,
-                    'BOT_MAX_TRADES_PER_HOUR': max_trades_per_hour,
+                    'BOT_AGGRESSIVENESS': st.session_state['aggr'],
+                    'BOT_PREDICTION_THRESHOLD': st.session_state['threshold'],
+                    'BOT_CONFIRMATIONS_REQUIRED_BUY': st.session_state['confirms'],
+                    'BOT_CONFIRMATIONS_REQUIRED_SELL': st.session_state['confirms'],
+                    'BOT_RSI_BUY_MAX': st.session_state['rsi_buy_max'],
+                    'BOT_RSI_SELL_MIN': st.session_state['rsi_sell_min'],
+                    'BOT_MAX_SPREAD_PERCENT_NORMAL': st.session_state['spread_normal'],
+                    'BOT_MAX_SPREAD_PERCENT_VOLATILE': st.session_state['spread_volatile'],
+                    'BOT_MIN_TRADE_INTERVAL': st.session_state['min_interval'],
+                    'BOT_MAX_TRADES_PER_HOUR': st.session_state['max_trades_per_hour'],
                 })
                 if new_pid:
                     st.session_state["bot_pid"] = new_pid
