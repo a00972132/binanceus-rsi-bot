@@ -4,6 +4,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional, Dict, Tuple, List
+import re
+from datetime import datetime
 from typing import Optional, Dict, Tuple
 
 import numpy as np
@@ -171,6 +174,77 @@ def _compute_series_indicators(df: pd.DataFrame) -> Dict[str, pd.Series]:
     out["macd"] = macd_line
     out["signal"] = signal
     return out
+
+
+def _parse_trade_markers(df_index: pd.Index, max_lines: int = 3000) -> Tuple[List[pd.Timestamp], List[float], List[pd.Timestamp], List[float]]:
+    """Parse recent executed trades from the log and align them to chart index.
+    Returns (buy_x, buy_y, sell_x, sell_y).
+    """
+    buy_x: List[pd.Timestamp] = []
+    buy_y: List[float] = []
+    sell_x: List[pd.Timestamp] = []
+    sell_y: List[float] = []
+    if not LOG_PATH.exists():
+        return buy_x, buy_y, sell_x, sell_y
+    try:
+        with LOG_PATH.open('r', errors='ignore') as f:
+            lines = f.readlines()[-max_lines:]
+    except Exception:
+        return buy_x, buy_y, sell_x, sell_y
+    ts_re = re.compile(r'^(\d{4}-\d{2}-\d{2} [0-9:]{8})\s*-')
+    side_re = re.compile(r'^\s*Side:\s*(BUY|SELL)', re.IGNORECASE)
+    price_re = re.compile(r'^\s*Price:\s*\$?([0-9,.]+)')
+    current_ts: Optional[pd.Timestamp] = None
+    cur_side: Optional[str] = None
+    cur_price: Optional[float] = None
+    def flush():
+        nonlocal cur_side, cur_price, current_ts
+        if cur_side and cur_price and current_ts is not None and len(df_index) > 0:
+            # align to nearest chart index
+            try:
+                ts = pd.to_datetime(current_ts)
+                pos = df_index.get_indexer([ts], method='nearest')
+                if pos is not None and len(pos) and pos[0] != -1:
+                    aligned_ts = df_index[pos[0]]
+                    if abs((aligned_ts - ts).total_seconds()) <= 600:  # within 10 minutes
+                        if cur_side.upper().startswith('B'):
+                            buy_x.append(aligned_ts)
+                            buy_y.append(float(cur_price))
+                        else:
+                            sell_x.append(aligned_ts)
+                            sell_y.append(float(cur_price))
+            except Exception:
+                pass
+        cur_side = None
+        cur_price = None
+    for line in lines:
+        m = ts_re.match(line)
+        if m:
+            # starting a new record
+            # flush any pending block
+            flush()
+            try:
+                current_ts = pd.to_datetime(m.group(1))
+            except Exception:
+                current_ts = None
+            continue
+        sm = side_re.search(line)
+        if sm:
+            cur_side = sm.group(1).upper()
+            continue
+        pm = price_re.search(line)
+        if pm:
+            try:
+                cur_price = float(pm.group(1).replace(',', ''))
+            except Exception:
+                cur_price = None
+            continue
+        if '====' in line:
+            # end of block
+            flush()
+    # final flush
+    flush()
+    return buy_x, buy_y, sell_x, sell_y
 
 
 def _render_header(pid_running: bool, pid: Optional[int], symbol: str, timeframe: str) -> None:
@@ -415,7 +489,7 @@ def main():
 
         # Indicator toggles
         st.caption("Chart display options")
-        opt_col1, opt_col2, opt_col3, opt_col4 = st.columns(4)
+        opt_col1, opt_col2, opt_col3, opt_col4, opt_col5 = st.columns(5)
         with opt_col1:
             show_sma = st.checkbox("Show SMAs", value=True)
         with opt_col2:
@@ -424,6 +498,8 @@ def main():
             show_rsi = st.checkbox("Show RSI", value=True)
         with opt_col4:
             show_macd = st.checkbox("Show MACD", value=True)
+        with opt_col5:
+            show_trades = st.checkbox("Show Trades", value=True)
 
         # Price + SMA chart
         try:
@@ -439,6 +515,21 @@ def main():
             if show_sma and "sma200" in inds:
                 fig.add_trace(go.Scatter(x=dfv.index, y=inds["sma200"], name="SMA 200", line=dict(color="#ff7f0e")))
             fig.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10))
+            # Overlay executed trade markers from logs
+            if show_trades:
+                bx, by, sx, sy = _parse_trade_markers(dfv.index)
+                if bx:
+                    fig.add_trace(go.Scatter(
+                        x=bx, y=by, name='Buy', mode='markers',
+                        marker=dict(color='#16a34a', symbol='triangle-up', size=10),
+                        hovertemplate='Buy @ %{y:.2f}<extra></extra>'
+                    ))
+                if sx:
+                    fig.add_trace(go.Scatter(
+                        x=sx, y=sy, name='Sell', mode='markers',
+                        marker=dict(color='#dc2626', symbol='triangle-down', size=10),
+                        hovertemplate='Sell @ %{y:.2f}<extra></extra>'
+                    ))
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e:
             st.warning(f"Plotly not available: {e}")
