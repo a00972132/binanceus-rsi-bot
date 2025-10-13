@@ -24,6 +24,7 @@ run/
 .streamlit-app.log
 .streamlit-app.pid
 trading_bot.log
+.DS_Store
 
 # Builds
 dist/
