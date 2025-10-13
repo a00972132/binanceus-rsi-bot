@@ -622,6 +622,31 @@ def main():
         st.info("No market data available right now.")
 
     # Logs viewer
+    st.subheader("Performance")
+    try:
+        eq_price = price
+        eq_bal = bal if 'bal' in locals() else (bot.fetch_balance() or {})
+        usdt_total = float(eq_bal.get("total", {}).get("USDT", 0.0))
+        eth_total = float(eq_bal.get("total", {}).get("ETH", 0.0))
+        equity = usdt_total + eth_total * eq_price
+        base = st.session_state.get('perf_base_equity')
+        if base is None:
+            st.session_state['perf_base_equity'] = equity
+            base = equity
+        peak = st.session_state.get('perf_peak_equity', equity)
+        if equity > peak:
+            peak = equity
+            st.session_state['perf_peak_equity'] = peak
+        dd = 0.0 if peak <= 0 else (peak - equity) / peak
+        cols_perf = st.columns(4)
+        cols_perf[0].metric("Equity", f"${equity:,.2f}")
+        cols_perf[1].metric("PnL (since baseline)", f"${(equity - base):,.2f}")
+        cols_perf[2].metric("Drawdown", f"{dd*100:.2f}%")
+        cols_perf[3].button("Reset baseline", on_click=lambda: st.session_state.update({'perf_base_equity': equity, 'perf_peak_equity': equity}))
+    except Exception:
+        st.caption("Performance metrics unavailable")
+
+    # Logs viewer
     st.subheader("Bot Logs")
     want_lines = int(st.session_state.get("log_lines", 200))
     newest_first = bool(st.session_state.get("log_newest_first", True))

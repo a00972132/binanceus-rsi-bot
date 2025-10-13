@@ -126,7 +126,7 @@ logging.info(
 
 # ML Model Parameters
 FEATURE_WINDOW = 20
-PREDICTION_THRESHOLD = 0.65
+# Note: PREDICTION_THRESHOLD is set above from env/presets
 MODEL_RETRAIN_INTERVAL_DEFAULT = 1000  # default retrain frequency
 
 class MarketRegime:
@@ -399,7 +399,9 @@ def check_volume(df: pd.DataFrame) -> bool:
 
 
 def get_trade_size(balance: dict, price: float, atr: float,
-                   rsi_val: float = 50.0, momentum_score_val: float = 1.0) -> float:
+                   rsi_val: float = 50.0, momentum_score_val: float = 1.0,
+                   risk_per_trade: Optional[float] = None,
+                   atr_multiplier: Optional[float] = None) -> float:
     """
     Compute the position size in ETH based on risk and momentum.
     Uses the total account value in USD and adjusts position size based on
@@ -412,10 +414,13 @@ def get_trade_size(balance: dict, price: float, atr: float,
     usdt_free = balance['free'].get('USDT', 0.0)
     eth_value_usd = eth_free * price
     total_account_value_usd = eth_value_usd + usdt_free
-    risk_amount = total_account_value_usd * RISK_PER_TRADE
+    rpt = RISK_PER_TRADE if risk_per_trade is None else float(risk_per_trade)
+    risk_amount = total_account_value_usd * rpt
     if abs(rsi_val - 50) > 20:
         risk_amount *= 1.5
-    stop_distance_usd = atr * price * 0.8
+    # ATR is already in quote currency (USDT). Allow tuning via BOT_ATR_MULTIPLIER
+    atr_mult = float(os.getenv('BOT_ATR_MULTIPLIER', str(atr_multiplier if atr_multiplier is not None else 1.0)))
+    stop_distance_usd = atr * atr_mult
     if stop_distance_usd <= 0:
         return 0.0
     trade_size_eth = risk_amount / stop_distance_usd
@@ -523,7 +528,9 @@ def place_order(side: str, trade_size: float, current_price: float,
     if spread is None or ask_price is None or ask_price == 0:
         logging.warning("Could not fetch valid order book. Skipping trade.")
         return None
-    spread_percentage = (spread / ask_price) * 100
+    mid_price = (bid_price + ask_price) / 2 if bid_price and ask_price else current_price
+    base_price = mid_price if mid_price and mid_price > 0 else ask_price
+    spread_percentage = (spread / base_price) * 100 if base_price else 100.0
     regime = detect_market_regime(df)
     max_spread_percentage = (
         MAX_SPREAD_PERCENT_VOLATILE if regime == MarketRegime.VOLATILE else MAX_SPREAD_PERCENT_NORMAL
@@ -797,13 +804,15 @@ def run_bot():
 
             # Calculate indicators
             try:
-                rsi_val = calculate_rsi(df, RSI_PERIOD)
-                sma_val = calculate_sma(df, SMA_PERIOD)
-                macd_line, signal_line = calculate_macd(df)
-                atr_val = calculate_atr(df, 14)
-                trend_bullish = check_trend(df, sma_val, price)
-                volume_confirmed = check_volume(df)
-                momentum_score = calculate_momentum_score(df)
+                # Use only closed candles for signal computation
+                df_sig = df.iloc[:-1] if len(df) > 1 else df
+                rsi_val = calculate_rsi(df_sig, RSI_PERIOD)
+                sma_val = calculate_sma(df_sig, SMA_PERIOD)
+                macd_line, signal_line = calculate_macd(df_sig)
+                atr_val = calculate_atr(df_sig, 14)
+                trend_bullish = check_trend(df_sig, sma_val, price)
+                volume_confirmed = check_volume(df_sig)
+                momentum_score = calculate_momentum_score(df_sig)
                 if iteration % 10 == 0:  # Every 10 iterations
                     print(f"RSI: {rsi_val:.2f}")
                     print(f"Trend: {'Bullish' if trend_bullish else 'Bearish'}")
@@ -816,7 +825,7 @@ def run_bot():
             if candle_count % model_retrain_interval == 0:
                 try:
                     logging.info("Retraining ML model...")
-                    if trader.train_model(df):
+                    if trader.train_model(df.iloc[:-1] if len(df) > 1 else df):
                         logging.info("ML model retrained successfully.")
                     else:
                         logging.warning("Insufficient data for retraining ML model.")
@@ -866,7 +875,8 @@ def run_bot():
             # Determine trade size
             trade_size = get_trade_size(
                 current_balance, price, atr_val,
-                rsi_val=rsi_val, momentum_score_val=momentum_score
+                rsi_val=rsi_val, momentum_score_val=momentum_score,
+                risk_per_trade=current_risk_per_trade
             )
 
             # Check risk manager before trading
@@ -934,7 +944,7 @@ def run_bot():
                 logging.info(
                     f"Buy signal detected (ML Prob: {up_probability:.2f})")
                 # Place order and ensure no pre‑existing long is counted as multiple
-                order = place_order('buy', trade_size, price, df)
+                order = place_order('buy', trade_size, price, df_sig)
                 if order:
                     current_position += trade_size
                     entry_price = price
@@ -948,7 +958,7 @@ def run_bot():
                 available_to_sell = current_balance['free'].get('ETH', 0.0)
                 sell_size = min(trade_size, available_to_sell)
                 if sell_size > 0:
-                    order = place_order('sell', sell_size, price, df)
+                    order = place_order('sell', sell_size, price, df_sig)
                     if order and entry_price > 0:
                         profit_loss = (price - entry_price) / entry_price
                         risk_manager.update_trade_result(profit_loss)
@@ -962,7 +972,7 @@ def run_bot():
                 tp_amount = manage_take_profits(
                     current_position, entry_price, price, df)
                 if tp_amount > 0:
-                    order = place_order('sell', tp_amount, price, df)
+                    order = place_order('sell', tp_amount, price, df_sig)
                     if order:
                         current_position = max(current_position - tp_amount, 0.0)
                         logging.info(
