@@ -241,17 +241,21 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
                 st.session_state[k] = v
             st.session_state['aggr'] = aggr
             st.session_state['_prev_aggr'] = aggr
-        # Threshold and confirmations (bound to session state)
-        st.slider("Model threshold", 0.50, 0.80, value=float(st.session_state['threshold']), step=0.01,
+        # Threshold and confirmations (bound to session state; safe defaults)
+        st.slider("Model threshold", 0.50, 0.80,
+                  value=float(st.session_state.get('threshold', presets[aggr]['threshold'])), step=0.01,
                   help="Minimum ML up-probability to consider a buy (sell uses 1-threshold)", key='threshold')
-        st.slider("Confirmations required", 1, 3, value=int(st.session_state['confirms']),
+        st.slider("Confirmations required", 1, 3,
+                  value=int(st.session_state.get('confirms', presets[aggr]['confirms'])),
                   help="Count among [MACD, trend, volume]", key='confirms')
         colr1, colr2 = st.columns(2)
         with colr1:
-            st.slider("RSI buy max", 20, 80, value=int(st.session_state['rsi_buy_max']), step=1,
+            st.slider("RSI buy max", 20, 80,
+                      value=int(st.session_state.get('rsi_buy_max', presets[aggr]['rsi_buy_max'])), step=1,
                       help="Consider buys when RSI is below this", key='rsi_buy_max')
         with colr2:
-            st.slider("RSI sell min", 20, 80, value=int(st.session_state['rsi_sell_min']), step=1,
+            st.slider("RSI sell min", 20, 80,
+                      value=int(st.session_state.get('rsi_sell_min', presets[aggr]['rsi_sell_min'])), step=1,
                       help="Consider sells when RSI is above this", key='rsi_sell_min')
 
         # Spread + cadence tuning
@@ -259,20 +263,24 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
         spc1, spc2 = st.columns(2)
         with spc1:
             spread_normal = st.slider(
-                "Max spread (normal) %", 0.05, 0.50, value=float(st.session_state['spread_normal']), step=0.01,
+                "Max spread (normal) %", 0.05, 0.50,
+                value=float(st.session_state.get('spread_normal', presets[aggr]['spread_normal'])), step=0.01,
                 help="Skip trades if order book spread is above this in normal regime"
             )
             min_interval = st.slider(
-                "Min trade interval (sec)", 5, 120, value=int(st.session_state['min_interval']), step=1,
+                "Min trade interval (sec)", 5, 120,
+                value=int(st.session_state.get('min_interval', presets[aggr]['min_interval'])), step=1,
                 help="Minimum seconds between trades"
             )
         with spc2:
             spread_volatile = st.slider(
-                "Max spread (volatile) %", 0.10, 0.80, value=float(st.session_state['spread_volatile']), step=0.01,
+                "Max spread (volatile) %", 0.10, 0.80,
+                value=float(st.session_state.get('spread_volatile', presets[aggr]['spread_volatile'])), step=0.01,
                 help="Skip trades if spread above this in volatile regime"
             )
             max_trades_per_hour = st.slider(
-                "Max trades per hour", 1, 60, value=int(st.session_state['max_trades_per_hour']), step=1,
+                "Max trades per hour", 1, 60,
+                value=int(st.session_state.get('max_trades_per_hour', presets[aggr]['max_trades_per_hour'])), step=1,
                 help="Hard cap on trading frequency"
             )
         # Persist for UI reference
@@ -405,6 +413,18 @@ def main():
         dfv = df.tail(400).copy()
         inds = _compute_series_indicators(dfv)
 
+        # Indicator toggles
+        st.caption("Chart display options")
+        opt_col1, opt_col2, opt_col3, opt_col4 = st.columns(4)
+        with opt_col1:
+            show_sma = st.checkbox("Show SMAs", value=True)
+        with opt_col2:
+            show_vol = st.checkbox("Show Volume", value=True)
+        with opt_col3:
+            show_rsi = st.checkbox("Show RSI", value=True)
+        with opt_col4:
+            show_macd = st.checkbox("Show MACD", value=True)
+
         # Price + SMA chart
         try:
             import plotly.graph_objects as go
@@ -414,9 +434,9 @@ def main():
                 x=dfv.index,
                 open=dfv['open'], high=dfv['high'], low=dfv['low'], close=dfv['close'],
                 name='Price'))
-            if "sma50" in inds:
+            if show_sma and "sma50" in inds:
                 fig.add_trace(go.Scatter(x=dfv.index, y=inds["sma50"], name="SMA 50", line=dict(color="#1f77b4")))
-            if "sma200" in inds:
+            if show_sma and "sma200" in inds:
                 fig.add_trace(go.Scatter(x=dfv.index, y=inds["sma200"], name="SMA 200", line=dict(color="#ff7f0e")))
             fig.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig, use_container_width=True)
@@ -424,17 +444,53 @@ def main():
             st.warning(f"Plotly not available: {e}")
             st.line_chart(dfv["close"])
 
-        # RSI and MACD panels
-        c1, c2 = st.columns(2)
-        with c1:
-            st.caption("RSI(14)")
-            if "rsi14" in inds:
-                st.line_chart(inds["rsi14"])
-        with c2:
-            st.caption("MACD")
-            if "macd" in inds and "signal" in inds:
-                macd_df = pd.DataFrame({"macd": inds["macd"], "signal": inds["signal"]}, index=dfv.index)
-                st.line_chart(macd_df)
+        # Volume bars
+        if show_vol and 'volume' in dfv:
+            try:
+                import plotly.graph_objects as go
+                vfig = go.Figure()
+                vfig.add_trace(go.Bar(x=dfv.index, y=dfv['volume'], name='Volume', marker_color='#9ca3af'))
+                vfig.update_layout(height=120, margin=dict(l=10, r=10, t=0, b=10))
+                st.plotly_chart(vfig, use_container_width=True)
+            except Exception:
+                st.bar_chart(dfv['volume'])
+
+        # RSI and MACD panels with thresholds and histogram
+        try:
+            if show_rsi and "rsi14" in inds:
+                import plotly.graph_objects as go
+                rsi_fig = go.Figure()
+                rsi_fig.add_trace(go.Scatter(x=dfv.index, y=inds['rsi14'], name='RSI(14)', line=dict(color="#374151")))
+                # Thresholds
+                rsi_buy_max = float(st.session_state.get('rsi_buy_max', getattr(bot, 'RSI_BUY_MAX', 70.0)))
+                rsi_sell_min = float(st.session_state.get('rsi_sell_min', getattr(bot, 'RSI_SELL_MIN', 30.0)))
+                rsi_fig.add_hline(y=rsi_buy_max, line=dict(color="#16a34a", width=1, dash='dot'))
+                rsi_fig.add_hline(y=rsi_sell_min, line=dict(color="#dc2626", width=1, dash='dot'))
+                # Shaded zones
+                rsi_fig.add_shape(type="rect", xref="x", yref="y",
+                                  x0=dfv.index.min(), x1=dfv.index.max(), y0=0, y1=rsi_buy_max,
+                                  fillcolor="#16a34a", opacity=0.06, line_width=0)
+                rsi_fig.add_shape(type="rect", xref="x", yref="y",
+                                  x0=dfv.index.min(), x1=dfv.index.max(), y0=rsi_sell_min, y1=100,
+                                  fillcolor="#dc2626", opacity=0.06, line_width=0)
+                rsi_fig.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10), yaxis=dict(range=[0,100]))
+                st.plotly_chart(rsi_fig, use_container_width=True)
+
+            if show_macd and "macd" in inds and "signal" in inds:
+                import plotly.graph_objects as go
+                macd_fig = go.Figure()
+                macd_line = inds['macd']
+                signal_line = inds['signal']
+                hist = macd_line - signal_line
+                colors = ['#16a34a' if v >= 0 else '#dc2626' for v in hist]
+                macd_fig.add_trace(go.Bar(x=dfv.index, y=hist, name='Histogram', marker_color=colors))
+                macd_fig.add_trace(go.Scatter(x=dfv.index, y=macd_line, name='MACD', line=dict(color="#2563eb")))
+                macd_fig.add_trace(go.Scatter(x=dfv.index, y=signal_line, name='Signal', line=dict(color="#f59e0b")))
+                macd_fig.add_hline(y=0, line=dict(color="#9ca3af", width=1))
+                macd_fig.update_layout(height=220, margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(macd_fig, use_container_width=True)
+        except Exception:
+            pass
 
         # Latest indicators summary with criteria coloring
         try:
