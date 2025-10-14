@@ -254,12 +254,20 @@ class RiskManager:
             logging.warning(
                 f"Max drawdown reached: {self.current_drawdown:.2%}")
             return False
-        position_value = abs(proposed_position_size) * price
+        position_value = abs(proposed_position_size) * price if price else 0.0
         if current_balance_usd == 0:
             return False
-        if position_value / current_balance_usd > self.max_position_size:
-            logging.warning(
-                f"Position size too large: {(position_value / current_balance_usd):.2%}")
+        ratio = (position_value / current_balance_usd) if current_balance_usd > 0 else 1.0
+        if ratio > self.max_position_size:
+            diag = os.getenv('BOT_DIAGNOSTICS', 'false').lower() in ('1','true','yes','y')
+            msg = (
+                f"Position size too large: {ratio:.2%} "
+                f"(allowed ≤ {self.max_position_size:.2%}, value=${position_value:,.2f}, equity=${current_balance_usd:,.2f})"
+            )
+            if diag:
+                logging.warning(msg)
+            else:
+                logging.debug(msg)
             return False
         # Stop trading if daily losses exceed 5%
         if self.daily_loss < -0.05:
@@ -883,14 +891,15 @@ def run_bot():
             )
 
             # Clamp to the maximum allowed position size before risk check
-            try:
-                if price > 0:
-                    max_pos_value = risk_manager.max_position_size * portfolio_value_usd
-                    cap_size_eth = max_pos_value / price if price > 0 else 0.0
-                    if cap_size_eth > 0:
-                        trade_size = min(trade_size, cap_size_eth)
-            except Exception:
-                pass
+            if price and price > 0 and portfolio_value_usd > 0:
+                max_pos_value = float(getattr(risk_manager, 'max_position_size', 0.3)) * float(portfolio_value_usd)
+                cap_size_eth = max_pos_value / float(price)
+                if cap_size_eth > 0:
+                    if trade_size > cap_size_eth:
+                        logging.debug(
+                            f"Clamping trade size from {trade_size:.6f} to {cap_size_eth:.6f} ETH to respect position cap"
+                        )
+                    trade_size = min(trade_size, cap_size_eth)
 
             # Check risk manager before trading
             if not risk_manager.can_trade(portfolio_value_usd, trade_size, price):
