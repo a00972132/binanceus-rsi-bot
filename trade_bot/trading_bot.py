@@ -420,7 +420,10 @@ def get_trade_size(balance: dict, price: float, atr: float,
         risk_amount *= 1.5
     # ATR is already in quote currency (USDT). Allow tuning via BOT_ATR_MULTIPLIER
     atr_mult = float(os.getenv('BOT_ATR_MULTIPLIER', str(atr_multiplier if atr_multiplier is not None else 1.0)))
-    stop_distance_usd = atr * atr_mult
+    # Apply a minimum ATR floor to avoid oversized positions when ATR is extremely small
+    min_atr_usd = float(os.getenv('BOT_MIN_ATR_USD', '0'))
+    eff_atr = max(atr, min_atr_usd)
+    stop_distance_usd = eff_atr * atr_mult
     if stop_distance_usd <= 0:
         return 0.0
     trade_size_eth = risk_amount / stop_distance_usd
@@ -878,6 +881,16 @@ def run_bot():
                 rsi_val=rsi_val, momentum_score_val=momentum_score,
                 risk_per_trade=current_risk_per_trade
             )
+
+            # Clamp to the maximum allowed position size before risk check
+            try:
+                if price > 0:
+                    max_pos_value = risk_manager.max_position_size * portfolio_value_usd
+                    cap_size_eth = max_pos_value / price if price > 0 else 0.0
+                    if cap_size_eth > 0:
+                        trade_size = min(trade_size, cap_size_eth)
+            except Exception:
+                pass
 
             # Check risk manager before trading
             if not risk_manager.can_trade(portfolio_value_usd, trade_size, price):
