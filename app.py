@@ -784,6 +784,123 @@ def main():
                     "- Model up-prob must exceed threshold for buys (or be below 1-threshold for sells)\n"
                     "- Confirmations count checks MACD direction, Trend alignment (Price vs SMA), and Volume boost"
                 )
+
+            # Trade Gates: end-to-end checklist for Buy and Sell
+            try:
+                # Balance and portfolio
+                try:
+                    balance = bal if 'bal' in locals() else (bot.fetch_balance() or {})
+                except Exception:
+                    balance = {}
+                usdt_total_g = float((balance.get('total') or {}).get('USDT', 0.0))
+                eth_total_g = float((balance.get('total') or {}).get('ETH', 0.0))
+                free_eth = float((balance.get('free') or {}).get('ETH', 0.0))
+                portfolio_value = usdt_total_g + eth_total_g * price if 'price' in locals() else 0.0
+
+                # ATR and momentum for sizing
+                atr_val = float(bot.calculate_atr(df))
+                momentum_score = float(bot.calculate_momentum_score(df))
+
+                # Estimate size with current bot logic
+                try:
+                    est_size = float(bot.get_trade_size(
+                        balance, float(price), atr_val,
+                        rsi_val=float(rsi_val), momentum_score_val=momentum_score
+                    )) if price else 0.0
+                except Exception:
+                    est_size = 0.0
+                est_value = est_size * float(price) if price else 0.0
+
+                # Spread gate
+                try:
+                    bid, ask, spread = bot.get_order_book_spread()
+                    mid = (bid + ask) / 2 if bid and ask else float(price)
+                    base_p = mid if mid and mid > 0 else ask
+                    spread_pct = (spread / base_p) * 100 if base_p else 100.0
+                except Exception:
+                    spread_pct = 999.0
+                try:
+                    regime = bot.detect_market_regime(df)
+                except Exception:
+                    regime = getattr(bot, 'MarketRegime', type('X', (), {'VOLATILE':'VOLATILE'})).VOLATILE
+                spread_cap = float(st.session_state.get('spread_volatile' if regime == bot.MarketRegime.VOLATILE else 'spread_normal', 0.22))
+                spread_ok = spread_pct <= spread_cap
+
+                # Risk cap (position size vs equity)
+                try:
+                    max_pos_frac = float(getattr(bot.risk_manager, 'max_position_size', 0.3))
+                except Exception:
+                    max_pos_frac = 0.3
+                pos_cap_value = portfolio_value * max_pos_frac
+                # Compute clamped size/value same as bot
+                cap_size_eth = (pos_cap_value / float(price)) if price else 0.0
+                clamped_size = min(est_size, cap_size_eth) if cap_size_eth > 0 else est_size
+                clamped_value = clamped_size * float(price) if price else 0.0
+                pos_cap_ok = clamped_value <= pos_cap_value if pos_cap_value > 0 else False
+
+                # Gates per side
+                ml_buy_ok = (up_prob is not None) and (up_prob > pred_thresh)
+                ml_sell_ok = (up_prob is not None) and (up_prob < (1 - pred_thresh))
+                rsi_buy_ok = rsi_val < rsi_buy_max
+                rsi_sell_ok = rsi_val > rsi_sell_min
+                conf_buy_ok = (confs_buy_met >= confirms_required_buy)
+                conf_sell_ok = (confs_sell_met >= confirms_required_sell)
+                size_ok = est_size > 0
+                have_eth = free_eth > 0.0
+
+                # Helpers for gate badge
+                def gate(label: str, ok: bool, detail: str = "") -> str:
+                    c = "#16a34a" if ok else "#dc2626"
+                    text = f"{label}: {detail}" if detail else label
+                    return f"<span style='color:{c};font-weight:600'>{text}</span>"
+
+                gcol1, gcol2 = st.columns(2)
+                with gcol1:
+                    st.caption("Trade Gates — Buy")
+                    st.markdown(gate("ML", ml_buy_ok, ("ok" if ml_buy_ok else "below threshold")), unsafe_allow_html=True)
+                    st.markdown(gate("RSI", rsi_buy_ok, f"{rsi_val:.1f} < {rsi_buy_max:.0f}"), unsafe_allow_html=True)
+                    st.markdown(gate("Confirmations", conf_buy_ok, f"{confs_buy_met}/{confirms_required_buy}"), unsafe_allow_html=True)
+                    st.markdown(gate("Spread", spread_ok, f"{spread_pct:.2f}% ≤ {spread_cap:.2f}%"), unsafe_allow_html=True)
+                    st.markdown(gate("Size>0", size_ok, f"{est_size:.6f} ETH"), unsafe_allow_html=True)
+                    st.markdown(gate("Position cap", pos_cap_ok,
+                                      f"proposed=${est_value:,.2f}; cap=${pos_cap_value:,.2f}; will use=${clamped_value:,.2f}"),
+                                unsafe_allow_html=True)
+                with gcol2:
+                    st.caption("Trade Gates — Sell")
+                    st.markdown(gate("ML", ml_sell_ok, ("ok" if ml_sell_ok else "above 1-threshold")), unsafe_allow_html=True)
+                    st.markdown(gate("RSI", rsi_sell_ok, f"{rsi_val:.1f} > {rsi_sell_min:.0f}"), unsafe_allow_html=True)
+                    st.markdown(gate("Confirmations", conf_sell_ok, f"{confs_sell_met}/{confirms_required_sell}"), unsafe_allow_html=True)
+                    st.markdown(gate("Spread", spread_ok, f"{spread_pct:.2f}% ≤ {spread_cap:.2f}%"), unsafe_allow_html=True)
+                    st.markdown(gate("Holdings", have_eth, f"{free_eth:.6f} ETH free"), unsafe_allow_html=True)
+                    st.markdown(gate("Position cap", pos_cap_ok,
+                                      f"proposed=${est_value:,.2f}; cap=${pos_cap_value:,.2f}; will use=${clamped_value:,.2f}"),
+                                unsafe_allow_html=True)
+
+                # Blocking reasons
+                buy_reasons = []
+                if not ml_buy_ok: buy_reasons.append("ML below threshold")
+                if not rsi_buy_ok: buy_reasons.append("RSI gate")
+                if not conf_buy_ok: buy_reasons.append("confirmations")
+                if not spread_ok: buy_reasons.append("spread")
+                if not size_ok: buy_reasons.append("size")
+                # If clamped_value fits the cap, position cap will not block
+                # (the order will use the clamped size). Only add if even clamped cannot fit.
+                if clamped_value > pos_cap_value: buy_reasons.append("position cap")
+                sell_reasons = []
+                if not ml_sell_ok: sell_reasons.append("ML not < 1-threshold")
+                if not rsi_sell_ok: sell_reasons.append("RSI gate")
+                if not conf_sell_ok: sell_reasons.append("confirmations")
+                if not spread_ok: sell_reasons.append("spread")
+                if not have_eth: sell_reasons.append("no free ETH")
+                if clamped_value > pos_cap_value: sell_reasons.append("position cap")
+                if buy_reasons or sell_reasons:
+                    st.caption(
+                        "Blocking reasons — "
+                        + (f"Buy: {', '.join(buy_reasons)}; " if buy_reasons else "")
+                        + (f"Sell: {', '.join(sell_reasons)}" if sell_reasons else "")
+                    )
+            except Exception:
+                pass
         except Exception:
             pass
     else:

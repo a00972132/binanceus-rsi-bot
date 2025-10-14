@@ -123,6 +123,8 @@ logging.info(
     MAX_SPREAD_PERCENT_NORMAL, MAX_SPREAD_PERCENT_VOLATILE,
     MIN_TRADE_INTERVAL, MAX_TRADES_PER_HOUR,
 )
+diag_flag = os.getenv('BOT_DIAGNOSTICS', 'false').lower() in ('1','true','yes','y')
+logging.info(f"Diagnostics: {'ON' if diag_flag else 'OFF'}")
 
 # ML Model Parameters
 FEATURE_WINDOW = 20
