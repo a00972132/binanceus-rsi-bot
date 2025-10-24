@@ -271,8 +271,10 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
         st.subheader("Bot Settings")
         symbol = st.text_input("Symbol", value=symbol, help="e.g., ETH/USDT, BTC/USDT")
         timeframe = st.selectbox("Timeframe", TIMEFRAME_OPTIONS, index=(TIMEFRAME_OPTIONS.index(timeframe) if timeframe in TIMEFRAME_OPTIONS else 0))
+        paper_trading = st.checkbox("Paper trading (no live orders)", value=bool(st.session_state.get('paper_trading', True)))
         st.session_state['symbol'] = symbol
         st.session_state['timeframe'] = timeframe
+        st.session_state['paper_trading'] = bool(paper_trading)
         st.caption("Settings apply when you start the bot. Restart to take effect.")
 
         st.subheader("Strategy Tuning")
@@ -332,6 +334,63 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
                       value=int(st.session_state.get('rsi_sell_min', presets[aggr]['rsi_sell_min'])), step=1,
                       help="Consider sells when RSI is above this", key='rsi_sell_min')
 
+        # Volume and soft entries/exits
+        st.caption("Volume filter and soft entries/exits")
+        vcol1, vcol2 = st.columns(2)
+        with vcol1:
+            vol_boost = st.slider(
+                "Volume boost multiplier", 1.00, 1.50,
+                value=float(st.session_state.get('volume_boost', 1.10)), step=0.01,
+                help="Require current volume > (multiplier × 20-period avg)"
+            )
+            soft_buy_delta = st.slider(
+                "Soft buy delta", 0.00, 0.15,
+                value=float(st.session_state.get('soft_buy_delta', 0.07)), step=0.01,
+                help="Allows buy if ML prob ≥ (threshold − delta) with reduced size"
+            )
+            soft_buy_size = st.slider(
+                "Soft buy size factor", 0.10, 1.00,
+                value=float(st.session_state.get('soft_buy_size', 0.50)), step=0.05,
+                help="Fraction of normal size for soft buys"
+            )
+        with vcol2:
+            soft_sell_delta = st.slider(
+                "Soft sell delta", 0.00, 0.15,
+                value=float(st.session_state.get('soft_sell_delta', 0.07)), step=0.01,
+                help="Allows sell if ML prob ≤ (1 − threshold + delta) with reduced size"
+            )
+            soft_sell_size = st.slider(
+                "Soft sell size factor", 0.10, 1.00,
+                value=float(st.session_state.get('soft_sell_size', 0.60)), step=0.05,
+                help="Fraction of normal size for soft sells"
+            )
+            sell_full_bear = st.checkbox(
+                "Sell full on strong bearish", value=bool(st.session_state.get('sell_full_bear', True)),
+                help="If model probability is decisively low and momentum is down, close entire position"
+            )
+
+        # Exits and protection
+        st.caption("Exits and protection")
+        xcol1, xcol2 = st.columns(2)
+        with xcol1:
+            pos_trail_pct = st.slider(
+                "Per-position trailing %", 0.03, 0.20,
+                value=float(st.session_state.get('pos_trail_pct', 0.08)), step=0.01,
+                help="Trail peak price since entry; widened in trends/volatility"
+            )
+        with xcol2:
+            atr_stop_mult = st.slider(
+                "ATR stop multiplier", 1.0, 4.0,
+                value=float(st.session_state.get('atr_stop_mult', 2.0)), step=0.1,
+                help="Hard stop at entry − ATR × multiplier"
+            )
+        strong_sell_delta = st.slider(
+            "Strong sell delta", 0.00, 0.20,
+            value=float(st.session_state.get('strong_sell_delta', 0.10)), step=0.01,
+            help="Full exit if prob ≤ (1 − threshold − delta) with bearish momentum"
+        )
+        diagnostics = st.checkbox("Verbose diagnostics in logs", value=bool(st.session_state.get('diagnostics', True)))
+
         # Spread + cadence tuning
         st.caption("Execution guards")
         spc1, spc2 = st.columns(2)
@@ -362,6 +421,16 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
         st.session_state['spread_volatile'] = float(spread_volatile)
         st.session_state['min_interval'] = int(min_interval)
         st.session_state['max_trades_per_hour'] = int(max_trades_per_hour)
+        st.session_state['volume_boost'] = float(vol_boost)
+        st.session_state['soft_buy_delta'] = float(soft_buy_delta)
+        st.session_state['soft_buy_size'] = float(soft_buy_size)
+        st.session_state['soft_sell_delta'] = float(soft_sell_delta)
+        st.session_state['soft_sell_size'] = float(soft_sell_size)
+        st.session_state['sell_full_bear'] = bool(sell_full_bear)
+        st.session_state['pos_trail_pct'] = float(pos_trail_pct)
+        st.session_state['atr_stop_mult'] = float(atr_stop_mult)
+        st.session_state['strong_sell_delta'] = float(strong_sell_delta)
+        st.session_state['diagnostics'] = bool(diagnostics)
 
         col1, col2 = st.columns(2)
         with col1:
@@ -369,6 +438,7 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
                 new_pid = _start_bot_process({
                     'BOT_SYMBOL': symbol,
                     'BOT_TIMEFRAME': timeframe,
+                    'BOT_PAPER_TRADING': 'true' if st.session_state.get('paper_trading', True) else 'false',
                     'BOT_AGGRESSIVENESS': st.session_state['aggr'],
                     'BOT_PREDICTION_THRESHOLD': st.session_state['threshold'],
                     'BOT_CONFIRMATIONS_REQUIRED_BUY': st.session_state['confirms'],
@@ -379,6 +449,16 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
                     'BOT_MAX_SPREAD_PERCENT_VOLATILE': st.session_state['spread_volatile'],
                     'BOT_MIN_TRADE_INTERVAL': st.session_state['min_interval'],
                     'BOT_MAX_TRADES_PER_HOUR': st.session_state['max_trades_per_hour'],
+                    'BOT_VOLUME_BOOST': st.session_state['volume_boost'],
+                    'BOT_SOFT_BUY_DELTA': st.session_state['soft_buy_delta'],
+                    'BOT_SOFT_BUY_SIZE_FACTOR': st.session_state['soft_buy_size'],
+                    'BOT_SOFT_SELL_DELTA': st.session_state['soft_sell_delta'],
+                    'BOT_SOFT_SELL_SIZE_FACTOR': st.session_state['soft_sell_size'],
+                    'BOT_SELL_FULL_ON_STRONG_BEAR': 'true' if st.session_state['sell_full_bear'] else 'false',
+                    'BOT_POS_TRAIL_PCT': st.session_state['pos_trail_pct'],
+                    'BOT_STOP_ATR_MULT': st.session_state['atr_stop_mult'],
+                    'BOT_STRONG_SELL_DELTA': st.session_state['strong_sell_delta'],
+                    'BOT_DIAGNOSTICS': 'true' if st.session_state['diagnostics'] else 'false',
                 })
                 if new_pid:
                     st.session_state["bot_pid"] = new_pid
@@ -626,9 +706,9 @@ def main():
             # Criteria thresholds (prefer UI session, fallback to bot)
             rsi_buy_max = float(st.session_state.get('rsi_buy_max', getattr(bot, 'RSI_BUY_MAX', 70.0)))
             rsi_sell_min = float(st.session_state.get('rsi_sell_min', getattr(bot, 'RSI_SELL_MIN', 30.0)))
-            pred_thresh = float(getattr(bot, 'PREDICTION_THRESHOLD', 0.65))
-            confirms_required_buy = int(getattr(bot, 'CONFIRMATIONS_REQUIRED_BUY', 2))
-            confirms_required_sell = int(getattr(bot, 'CONFIRMATIONS_REQUIRED_SELL', 2))
+            pred_thresh = float(st.session_state.get('threshold', getattr(bot, 'PREDICTION_THRESHOLD', 0.65)))
+            confirms_required_buy = int(st.session_state.get('confirms', getattr(bot, 'CONFIRMATIONS_REQUIRED_BUY', 2)))
+            confirms_required_sell = int(st.session_state.get('confirms', getattr(bot, 'CONFIRMATIONS_REQUIRED_SELL', 2)))
 
             # Signals/confirmations
             macd_up = latest_macd > latest_signal
@@ -642,6 +722,7 @@ def main():
                 volume_confirmed = bool(bot.check_volume(df))
             except Exception:
                 volume_confirmed = False
+            vol_mult = float(st.session_state.get('volume_boost', 1.10))
 
             # Confirmations count
             confs_buy_met = int(sum(1 for c in [macd_up, trend_bullish, volume_confirmed] if c))
@@ -737,7 +818,7 @@ def main():
                     unsafe_allow_html=True,
                 )
                 st.markdown(
-                    f"Volume boost: {colorize('True' if volume_confirmed else 'False', volume_confirmed)}",
+                    f"Volume boost x{vol_mult:.2f}: {colorize('True' if volume_confirmed else 'False', volume_confirmed)}",
                     unsafe_allow_html=True,
                 )
                 st.markdown(
@@ -767,7 +848,7 @@ def main():
                     unsafe_allow_html=True,
                 )
                 st.markdown(
-                    f"Volume boost: {colorize('True' if volume_confirmed else 'False', volume_confirmed)}",
+                    f"Volume boost x{vol_mult:.2f}: {colorize('True' if volume_confirmed else 'False', volume_confirmed)}",
                     unsafe_allow_html=True,
                 )
                 st.markdown(

@@ -403,9 +403,19 @@ def check_trend(df: pd.DataFrame, sma_val: float, price: float) -> bool:
 
 
 def check_volume(df: pd.DataFrame) -> bool:
+    """Volume confirmation with tunable boost multiplier.
+    Set env BOT_VOLUME_BOOST (e.g. 1.05 for +5%) to relax/tighten.
+    """
     current_volume = df['volume'].iloc[-1]
     avg_volume = df['volume'].rolling(window=20).mean().iloc[-1]
-    return current_volume > avg_volume * 1.2
+    try:
+        vol_boost = float(os.getenv('BOT_VOLUME_BOOST', '1.10'))
+    except Exception:
+        vol_boost = 1.10
+    # Guard against zero/NaN averages
+    if not np.isfinite(avg_volume) or avg_volume <= 0:
+        return False
+    return current_volume > avg_volume * vol_boost
 
 
 def get_trade_size(balance: dict, price: float, atr: float,
@@ -564,6 +574,15 @@ def place_order(side: str, trade_size: float, current_price: float,
         pass
     # Normalize trade size to market constraints
     trade_size = adjust_amount_for_market(trade_size, current_price)
+    # For sells, ensure we do not exceed free ETH after precision/min-cost bumps
+    try:
+        if side == 'sell':
+            bal = fetch_balance() or {}
+            eth_free = float((bal.get('free') or {}).get('ETH', 0.0))
+            if eth_free > 0:
+                trade_size = min(trade_size, eth_free * 0.999)
+    except Exception:
+        pass
     if trade_size <= 0:
         logging.warning("Trade size <= 0 after adjustment; skipping.")
         return None
@@ -752,6 +771,7 @@ def run_bot():
     model_retrain_interval = MODEL_RETRAIN_INTERVAL_DEFAULT
     current_position = 0.0
     entry_price = 0.0
+    peak_price_since_entry = 0.0  # for per-position trailing stop
     last_exit_price = 0.0
     last_trade_side = None
     
@@ -917,33 +937,70 @@ def run_bot():
                     logging.debug(msg)
                 trade_size = 0.0
 
-            # Determine buy/sell signals (tunable confirmations)
+            # Determine buy/sell signals (tunable + regime-adaptive)
             macd_up = macd_line.iloc[-1] > signal_line.iloc[-1]
             macd_down = macd_line.iloc[-1] < signal_line.iloc[-1]
             confs_buy = [macd_up, trend_bullish, volume_confirmed]
             confs_sell = [macd_down, (not trend_bullish), volume_confirmed]
             confirmations_met_buy = sum(1 for c in confs_buy if c)
             confirmations_met_sell = sum(1 for c in confs_sell if c)
-            confirmations_ok_buy = confirmations_met_buy >= max(0, CONFIRMATIONS_REQUIRED_BUY)
+
+            # Regime-aware confirmation requirements: relax in strong trends
+            regime_now = detect_market_regime(df_sig)
+            req_buy = max(0, CONFIRMATIONS_REQUIRED_BUY)
+            if regime_now == MarketRegime.TRENDING:
+                req_buy = max(1, req_buy - 1)
+            confirmations_ok_buy = confirmations_met_buy >= req_buy
             confirmations_ok_sell = confirmations_met_sell >= max(0, CONFIRMATIONS_REQUIRED_SELL)
 
+            # Primary buy: strict ML threshold
             buy_signal = (
                 trade_size > 0 and
                 up_probability > PREDICTION_THRESHOLD and
                 rsi_val < RSI_BUY_MAX and
                 confirmations_ok_buy
             )
-            sell_signal = (
+
+            # Soft buy: slightly lower ML threshold with at least 1 confirmation
+            try:
+                soft_delta = float(os.getenv('BOT_SOFT_BUY_DELTA', '0.07'))
+            except Exception:
+                soft_delta = 0.07
+            soft_threshold = max(0.50, PREDICTION_THRESHOLD - soft_delta)
+            soft_buy_signal = (
+                (not buy_signal) and
                 trade_size > 0 and
+                up_probability >= soft_threshold and
+                rsi_val < min(RSI_BUY_MAX + 5, 80) and
+                confirmations_met_buy >= 1
+            )
+            # Use available free ETH for sell gating instead of trade_size
+            available_to_sell_gate = float(current_balance['free'].get('ETH', 0.0))
+            sell_signal = (
+                available_to_sell_gate > 0 and
                 up_probability < (1 - PREDICTION_THRESHOLD) and
                 rsi_val > RSI_SELL_MIN and
                 confirmations_ok_sell
             )
 
+            # Soft sell: slightly higher ML threshold with at least 1 confirmation
+            try:
+                soft_sell_delta = float(os.getenv('BOT_SOFT_SELL_DELTA', '0.07'))
+            except Exception:
+                soft_sell_delta = 0.07
+            soft_sell_threshold = max(0.0, min(1.0, 1.0 - PREDICTION_THRESHOLD + soft_sell_delta))
+            soft_sell_signal = (
+                (not sell_signal) and
+                available_to_sell_gate > 0 and
+                up_probability <= soft_sell_threshold and
+                rsi_val > max(RSI_SELL_MIN - 5, 20) and
+                confirmations_met_sell >= 1
+            )
+
             # Diagnostics when no trade
             if not buy_signal and not sell_signal:
                 reasons = []
-                if trade_size <= 0:
+                if trade_size <= 0 and available_to_sell_gate <= 0:
                     reasons.append("size<=0")
                 if up_probability <= PREDICTION_THRESHOLD and up_probability >= (1 - PREDICTION_THRESHOLD):
                     reasons.append(f"ml_prob={up_probability:.2f} near threshold")
@@ -964,23 +1021,59 @@ def run_bot():
                         logging.debug(msg)
 
             # Execute buy signal
-            if buy_signal:
+            if buy_signal or soft_buy_signal:
                 logging.info(
-                    f"Buy signal detected (ML Prob: {up_probability:.2f})")
+                    f"Buy signal detected (ML Prob: {up_probability:.2f}{' soft' if soft_buy_signal and not buy_signal else ''})")
+                # Scale down size for soft buys
+                if soft_buy_signal and not buy_signal:
+                    trade_size *= float(os.getenv('BOT_SOFT_BUY_SIZE_FACTOR', '0.5'))
+                    trade_size = max(trade_size, 0.0)
                 # Place order and ensure no pre‑existing long is counted as multiple
                 order = place_order('buy', trade_size, price, df_sig)
                 if order:
                     current_position += trade_size
                     entry_price = price
+                    peak_price_since_entry = price
                     last_trade_side = 'buy'
 
             # Execute sell signal (closing or scaling out)
-            elif sell_signal:
+            elif sell_signal or soft_sell_signal:
                 logging.info(
-                    f"Sell signal detected (ML Prob: {up_probability:.2f})")
+                    f"Sell signal detected (ML Prob: {up_probability:.2f}{' soft' if soft_sell_signal and not sell_signal else ''})")
                 # Only sell up to the size of current position
-                available_to_sell = current_balance['free'].get('ETH', 0.0)
-                sell_size = min(trade_size, available_to_sell)
+                available_to_sell = float(current_balance['free'].get('ETH', 0.0))
+                # Scale down size for soft sells
+                if soft_sell_signal and not sell_signal:
+                    try:
+                        trade_size *= float(os.getenv('BOT_SOFT_SELL_SIZE_FACTOR', '0.5'))
+                    except Exception:
+                        trade_size *= 0.5
+                # Optional stronger exit if model is decisively bearish
+                try:
+                    strong_delta = float(os.getenv('BOT_STRONG_SELL_DELTA', '0.10'))
+                except Exception:
+                    strong_delta = 0.10
+                strong_threshold = max(0.0, 1.0 - PREDICTION_THRESHOLD - strong_delta)
+                strong_sell = (up_probability <= strong_threshold and macd_down and (not trend_bullish))
+                sell_full_flag = os.getenv('BOT_SELL_FULL_ON_STRONG_BEAR', 'true').lower() in ('1','true','yes','y')
+
+                # Determine sell size; if computed size is zero, fallback to a fraction of holdings
+                base_sell_size = trade_size
+                if base_sell_size <= 0 and available_to_sell > 0:
+                    try:
+                        fb_soft = float(os.getenv('BOT_SOFT_SELL_FALLBACK_FRACTION', '0.10'))
+                    except Exception:
+                        fb_soft = 0.10
+                    try:
+                        fb_main = float(os.getenv('BOT_SELL_FALLBACK_FRACTION', '0.25'))
+                    except Exception:
+                        fb_main = 0.25
+                    frac = fb_soft if (soft_sell_signal and not sell_signal) else fb_main
+                    base_sell_size = max(available_to_sell * max(0.0, min(frac, 1.0)), 0.0)
+                sell_size = min(base_sell_size, available_to_sell)
+                if strong_sell and sell_full_flag and current_position > 0:
+                    sell_size = min(current_position, available_to_sell)
+                    logging.info("Strong bearish signal: selling full position")
                 if sell_size > 0:
                     order = place_order('sell', sell_size, price, df_sig)
                     if order and entry_price > 0:
@@ -1001,6 +1094,47 @@ def run_bot():
                         current_position = max(current_position - tp_amount, 0.0)
                         logging.info(
                             f"Take profit executed, remaining position: {current_position:.6f} ETH")
+
+            # Per-position trailing stop and ATR stop-loss (optional)
+            if current_position > 0 and entry_price > 0:
+                # Track peak price since entry for trailing
+                peak_price_since_entry = max(peak_price_since_entry, price)
+                try:
+                    trail_pct = float(os.getenv('BOT_POS_TRAIL_PCT', str(TRAILING_STOP_PERCENT)))
+                except Exception:
+                    trail_pct = TRAILING_STOP_PERCENT
+                # Regime-aware widening
+                regime_now2 = detect_market_regime(df_sig)
+                if regime_now2 == MarketRegime.TRENDING:
+                    trail_pct *= 1.2
+                elif regime_now2 == MarketRegime.VOLATILE:
+                    trail_pct *= 1.5
+                trail_stop_price = peak_price_since_entry * (1.0 - max(0.0, min(trail_pct, 0.95)))
+
+                try:
+                    stop_mult = float(os.getenv('BOT_STOP_ATR_MULT', '2.0'))
+                except Exception:
+                    stop_mult = 2.0
+                hard_stop_price = entry_price - max(0.0, atr_val) * stop_mult
+
+                exit_reason = None
+                if price <= hard_stop_price:
+                    exit_reason = f"ATR stop-loss hit (mult={stop_mult})"
+                elif price <= trail_stop_price:
+                    exit_reason = f"Trailing stop hit ({trail_pct*100:.2f}%)"
+
+                if exit_reason:
+                    available_to_sell = current_balance['free'].get('ETH', 0.0)
+                    close_size = min(current_position, available_to_sell)
+                    if close_size > 0:
+                        logging.info(exit_reason + "; closing position")
+                        order = place_order('sell', close_size, price, df_sig)
+                        if order:
+                            current_position = max(current_position - close_size, 0.0)
+                            last_exit_price = price
+                            last_trade_side = 'sell'
+                            # reset peak since entry after closing
+                            peak_price_since_entry = 0.0 if current_position == 0.0 else peak_price_since_entry
 
             # Check trailing stop
             check_profit_loss(price)
