@@ -1,4 +1,5 @@
 import os
+import json
 import signal
 import subprocess
 import sys
@@ -25,6 +26,7 @@ REPO_DIR = Path(__file__).parent
 BOT_MODULE_PATH = REPO_DIR / "trade_bot" / "trading_bot.py"
 LOG_PATH = REPO_DIR / "logs" / "trading_bot.log"
 PID_PATH = REPO_DIR / "run" / "bot.pid"
+PERF_STATE_PATH = REPO_DIR / "run" / "perf_state.json"
 
 # Common timeframe options for Binance US (via CCXT)
 TIMEFRAME_OPTIONS = [
@@ -73,6 +75,39 @@ def _read_pid() -> Optional[int]:
     except Exception:
         return None
     return None
+
+
+def _load_perf_state() -> Dict[str, float]:
+    try:
+        if PERF_STATE_PATH.exists():
+            with PERF_STATE_PATH.open("r") as f:
+                data = json.load(f)
+            # ensure numeric types
+            out: Dict[str, float] = {}
+            for k in ("base", "peak"):
+                v = data.get(k)
+                try:
+                    out[k] = float(v)
+                except Exception:
+                    pass
+            return out
+    except Exception:
+        pass
+    return {}
+
+
+def _save_perf_state(base: Optional[float], peak: Optional[float]) -> None:
+    try:
+        PERF_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data: Dict[str, float] = {}
+        if base is not None:
+            data["base"] = float(base)
+        if peak is not None:
+            data["peak"] = float(peak)
+        with PERF_STATE_PATH.open("w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
 
 def _is_process_running(pid: Optional[int]) -> bool:
@@ -378,12 +413,27 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
                 value=float(st.session_state.get('pos_trail_pct', 0.08)), step=0.01,
                 help="Trail peak price since entry; widened in trends/volatility"
             )
+            min_hold_sec = st.slider(
+                "Min hold after buy (sec)", 0, 600,
+                value=int(st.session_state.get('min_hold_sec', 120)), step=10,
+                help="Block normal sells for at least this long after a buy (strong/ATR/trailing exits still allowed)"
+            )
         with xcol2:
             atr_stop_mult = st.slider(
                 "ATR stop multiplier", 1.0, 4.0,
                 value=float(st.session_state.get('atr_stop_mult', 2.0)), step=0.1,
                 help="Hard stop at entry − ATR × multiplier"
             )
+            sell_hyst = st.slider(
+                "Sell probability hysteresis", 0.00, 0.15,
+                value=float(st.session_state.get('sell_hyst', 0.05)), step=0.01,
+                help="Extra buffer below 1−threshold to trigger sells; reduces flip-flops"
+            )
+        atr_within_hold = st.slider(
+            "ATR trigger within hold", 0.00, 1.00,
+            value=float(st.session_state.get('atr_within_hold', 0.25)), step=0.05,
+            help="Within the hold window, allow sells if price ≤ entry − ATR × this value"
+        )
         strong_sell_delta = st.slider(
             "Strong sell delta", 0.00, 0.20,
             value=float(st.session_state.get('strong_sell_delta', 0.10)), step=0.01,
@@ -431,6 +481,9 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
         st.session_state['atr_stop_mult'] = float(atr_stop_mult)
         st.session_state['strong_sell_delta'] = float(strong_sell_delta)
         st.session_state['diagnostics'] = bool(diagnostics)
+        st.session_state['min_hold_sec'] = int(min_hold_sec)
+        st.session_state['sell_hyst'] = float(sell_hyst)
+        st.session_state['atr_within_hold'] = float(atr_within_hold)
 
         col1, col2 = st.columns(2)
         with col1:
@@ -459,6 +512,9 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
                     'BOT_STOP_ATR_MULT': st.session_state['atr_stop_mult'],
                     'BOT_STRONG_SELL_DELTA': st.session_state['strong_sell_delta'],
                     'BOT_DIAGNOSTICS': 'true' if st.session_state['diagnostics'] else 'false',
+                    'BOT_MIN_HOLD_SEC': st.session_state['min_hold_sec'],
+                    'BOT_SELL_HYSTERESIS': st.session_state['sell_hyst'],
+                    'BOT_SELL_ATR_WITHIN_HOLD': st.session_state['atr_within_hold'],
                 })
                 if new_pid:
                     st.session_state["bot_pid"] = new_pid
@@ -995,20 +1051,38 @@ def main():
         usdt_total = float(eq_bal.get("total", {}).get("USDT", 0.0))
         eth_total = float(eq_bal.get("total", {}).get("ETH", 0.0))
         equity = usdt_total + eth_total * eq_price
+
+        # Initialize baseline/peak from persisted state if not present in session
+        if 'perf_base_equity' not in st.session_state or 'perf_peak_equity' not in st.session_state:
+            persisted = _load_perf_state()
+            if 'base' in persisted:
+                st.session_state['perf_base_equity'] = float(persisted['base'])
+            if 'peak' in persisted:
+                st.session_state['perf_peak_equity'] = float(persisted['peak'])
+
         base = st.session_state.get('perf_base_equity')
         if base is None:
             st.session_state['perf_base_equity'] = equity
             base = equity
+            _save_perf_state(base, st.session_state.get('perf_peak_equity'))
+
         peak = st.session_state.get('perf_peak_equity', equity)
         if equity > peak:
             peak = equity
             st.session_state['perf_peak_equity'] = peak
+            _save_perf_state(st.session_state.get('perf_base_equity'), peak)
+
         dd = 0.0 if peak <= 0 else (peak - equity) / peak
         cols_perf = st.columns(4)
         cols_perf[0].metric("Equity", f"${equity:,.2f}")
         cols_perf[1].metric("PnL (since baseline)", f"${(equity - base):,.2f}")
         cols_perf[2].metric("Drawdown", f"{dd*100:.2f}%")
-        cols_perf[3].button("Reset baseline", on_click=lambda: st.session_state.update({'perf_base_equity': equity, 'perf_peak_equity': equity}))
+        def _reset_perf():
+            st.session_state.update({'perf_base_equity': equity, 'perf_peak_equity': equity})
+            _save_perf_state(equity, equity)
+        cols_perf[3].button("Reset baseline", on_click=_reset_perf)
+        # Small caption for transparency
+        st.caption(f"Baseline: ${base:,.2f} • Peak: ${peak:,.2f}")
     except Exception:
         st.caption("Performance metrics unavailable")
 

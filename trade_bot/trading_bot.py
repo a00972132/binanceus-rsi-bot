@@ -583,6 +583,26 @@ def place_order(side: str, trade_size: float, current_price: float,
                 trade_size = min(trade_size, eth_free * 0.999)
     except Exception:
         pass
+    # Final sanity: skip orders below exchange minimums (prevents InvalidOrder spam)
+    try:
+        market = exchange.market(SYMBOL)
+        limits = (market or {}).get('limits') or {}
+        min_amount = float((limits.get('amount') or {}).get('min') or 0.0)
+        min_cost = float((limits.get('cost') or {}).get('min') or 0.0)
+        notional = (trade_size * current_price) if (trade_size and current_price) else 0.0
+        below_amt = (min_amount > 0 and trade_size < min_amount)
+        below_cost = (min_cost > 0 and notional < min_cost)
+        if below_amt or below_cost:
+            reason = []
+            if below_amt:
+                reason.append(f"amount {trade_size:.8f} < min {min_amount}")
+            if below_cost:
+                reason.append(f"notional ${notional:.2f} < min ${min_cost:.2f}")
+            logging.info(f"Order skipped: below exchange minimums ({', '.join(reason)})")
+            return None
+    except Exception:
+        # If we cannot read limits, continue; exchange will validate.
+        pass
     if trade_size <= 0:
         logging.warning("Trade size <= 0 after adjustment; skipping.")
         return None
@@ -774,6 +794,7 @@ def run_bot():
     peak_price_since_entry = 0.0  # for per-position trailing stop
     last_exit_price = 0.0
     last_trade_side = None
+    last_entry_time = 0.0
     
     # Initial data fetch
     print("Fetching initial market data...")
@@ -976,9 +997,15 @@ def run_bot():
             )
             # Use available free ETH for sell gating instead of trade_size
             available_to_sell_gate = float(current_balance['free'].get('ETH', 0.0))
+            # Add probability hysteresis to reduce flip-flops
+            try:
+                sell_hyst = float(os.getenv('BOT_SELL_HYSTERESIS', '0.05'))
+            except Exception:
+                sell_hyst = 0.05
+            sell_cutoff = max(0.0, 1 - PREDICTION_THRESHOLD - max(0.0, min(sell_hyst, 0.2)))
             sell_signal = (
                 available_to_sell_gate > 0 and
-                up_probability < (1 - PREDICTION_THRESHOLD) and
+                up_probability < sell_cutoff and
                 rsi_val > RSI_SELL_MIN and
                 confirmations_ok_sell
             )
@@ -996,6 +1023,14 @@ def run_bot():
                 rsi_val > max(RSI_SELL_MIN - 5, 20) and
                 confirmations_met_sell >= 1
             )
+
+            # Strong bearish evaluation (for full-exit and hold override)
+            try:
+                strong_delta_eval = float(os.getenv('BOT_STRONG_SELL_DELTA', '0.10'))
+            except Exception:
+                strong_delta_eval = 0.10
+            strong_threshold_eval = max(0.0, 1.0 - PREDICTION_THRESHOLD - strong_delta_eval)
+            strong_bearish_now = (up_probability <= strong_threshold_eval and macd_down and (not trend_bullish))
 
             # Diagnostics when no trade
             if not buy_signal and not sell_signal:
@@ -1035,6 +1070,7 @@ def run_bot():
                     entry_price = price
                     peak_price_since_entry = price
                     last_trade_side = 'buy'
+                    last_entry_time = time.time()
 
             # Execute sell signal (closing or scaling out)
             elif sell_signal or soft_sell_signal:
@@ -1042,6 +1078,27 @@ def run_bot():
                     f"Sell signal detected (ML Prob: {up_probability:.2f}{' soft' if soft_sell_signal and not sell_signal else ''})")
                 # Only sell up to the size of current position
                 available_to_sell = float(current_balance['free'].get('ETH', 0.0))
+                # Minimum hold logic to avoid instant flip after buy
+                try:
+                    min_hold_sec = float(os.getenv('BOT_MIN_HOLD_SEC', '120'))
+                except Exception:
+                    min_hold_sec = 120.0
+                try:
+                    atr_within_hold_mult = float(os.getenv('BOT_SELL_ATR_WITHIN_HOLD', '0.25'))
+                except Exception:
+                    atr_within_hold_mult = 0.25
+                now_ts = time.time()
+                hold_active = (entry_price > 0 and current_position > 0 and (now_ts - (locals().get('last_entry_time', 0.0) or 0.0)) < min_hold_sec)
+                allow_sell_during_hold = strong_bearish_now or (
+                    entry_price > 0 and atr_val > 0 and price <= entry_price - atr_val * max(0.0, atr_within_hold_mult)
+                )
+                if hold_active and not allow_sell_during_hold:
+                    logging.info(
+                        f"Sell suppressed by min-hold ({int(min_hold_sec)}s). Awaiting strong/ATR/trailing exit.")
+                    sell_signal = False
+                    soft_sell_signal = False
+                    # Skip to take-profit and trailing logic
+                    pass
                 # Scale down size for soft sells
                 if soft_sell_signal and not sell_signal:
                     try:
@@ -1049,12 +1106,7 @@ def run_bot():
                     except Exception:
                         trade_size *= 0.5
                 # Optional stronger exit if model is decisively bearish
-                try:
-                    strong_delta = float(os.getenv('BOT_STRONG_SELL_DELTA', '0.10'))
-                except Exception:
-                    strong_delta = 0.10
-                strong_threshold = max(0.0, 1.0 - PREDICTION_THRESHOLD - strong_delta)
-                strong_sell = (up_probability <= strong_threshold and macd_down and (not trend_bullish))
+                strong_sell = strong_bearish_now
                 sell_full_flag = os.getenv('BOT_SELL_FULL_ON_STRONG_BEAR', 'true').lower() in ('1','true','yes','y')
 
                 # Determine sell size; if computed size is zero, fallback to a fraction of holdings
