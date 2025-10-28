@@ -418,6 +418,15 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
                 value=int(st.session_state.get('min_hold_sec', 120)), step=10,
                 help="Block normal sells for at least this long after a buy (strong/ATR/trailing exits still allowed)"
             )
+            no_churn_guard = st.checkbox(
+                "No-churn until small profit", value=bool(st.session_state.get('no_churn_guard', True)),
+                help="Prevents selling before a small profit unless strong-bearish or stop triggers"
+            )
+            min_profit_pct = st.slider(
+                "Min profit to allow sell (%)", 0.0, 1.0,
+                value=float(st.session_state.get('min_profit_pct', 0.30)), step=0.05,
+                help="Sells allowed after price has risen by at least this percent from entry"
+            )
         with xcol2:
             atr_stop_mult = st.slider(
                 "ATR stop multiplier", 1.0, 4.0,
@@ -433,6 +442,11 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
             "ATR trigger within hold", 0.00, 1.00,
             value=float(st.session_state.get('atr_within_hold', 0.25)), step=0.05,
             help="Within the hold window, allow sells if price ≤ entry − ATR × this value"
+        )
+        no_churn_atr_mult = st.slider(
+            "ATR override for no‑churn", 0.00, 1.00,
+            value=float(st.session_state.get('no_churn_atr_mult', 0.50)), step=0.05,
+            help="Outside the hold window, allow a sell before profit if price ≤ entry − ATR × this value"
         )
         strong_sell_delta = st.slider(
             "Strong sell delta", 0.00, 0.20,
@@ -484,6 +498,9 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
         st.session_state['min_hold_sec'] = int(min_hold_sec)
         st.session_state['sell_hyst'] = float(sell_hyst)
         st.session_state['atr_within_hold'] = float(atr_within_hold)
+        st.session_state['no_churn_guard'] = bool(no_churn_guard)
+        st.session_state['min_profit_pct'] = float(min_profit_pct)
+        st.session_state['no_churn_atr_mult'] = float(no_churn_atr_mult)
 
         col1, col2 = st.columns(2)
         with col1:
@@ -515,6 +532,9 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
                     'BOT_MIN_HOLD_SEC': st.session_state['min_hold_sec'],
                     'BOT_SELL_HYSTERESIS': st.session_state['sell_hyst'],
                     'BOT_SELL_ATR_WITHIN_HOLD': st.session_state['atr_within_hold'],
+                    'BOT_NO_CHURN_BEFORE_PROFIT': 'true' if st.session_state['no_churn_guard'] else 'false',
+                    'BOT_MIN_PROFIT_PCT': st.session_state['min_profit_pct'] / 100.0,
+                    'BOT_NO_CHURN_ATR_MULT': st.session_state['no_churn_atr_mult'],
                 })
                 if new_pid:
                     st.session_state["bot_pid"] = new_pid

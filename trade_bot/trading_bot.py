@@ -1095,10 +1095,25 @@ def run_bot():
                 if hold_active and not allow_sell_during_hold:
                     logging.info(
                         f"Sell suppressed by min-hold ({int(min_hold_sec)}s). Awaiting strong/ATR/trailing exit.")
-                    sell_signal = False
-                    soft_sell_signal = False
-                    # Skip to take-profit and trailing logic
-                    pass
+                    # Explicitly skip sell processing this iteration to avoid accidental orders
+                    # Take-profit and trailing/stop checks run after this block in the loop
+                    continue
+
+                # Optional no-churn: do not sell until a small profit is reached, unless strong-bear or stops
+                try:
+                    no_churn = os.getenv('BOT_NO_CHURN_BEFORE_PROFIT', 'true').lower() in ('1','true','yes','y')
+                    min_profit_pct = float(os.getenv('BOT_MIN_PROFIT_PCT', '0.003'))  # 0.3%
+                    no_churn_atr_mult = float(os.getenv('BOT_NO_CHURN_ATR_MULT', '0.50'))
+                except Exception:
+                    no_churn, min_profit_pct, no_churn_atr_mult = True, 0.003, 0.50
+                reached_profit = (entry_price > 0 and price >= entry_price * (1.0 + max(0.0, min_profit_pct)))
+                allow_no_churn_exit = strong_bearish_now or (
+                    entry_price > 0 and atr_val > 0 and price <= entry_price - atr_val * max(0.0, no_churn_atr_mult)
+                )
+                if no_churn and (not reached_profit) and (not allow_no_churn_exit):
+                    logging.info(
+                        f"Sell suppressed by no‑churn guard (awaiting +{min_profit_pct*100:.2f}% profit or strong/stop condition)")
+                    continue
                 # Scale down size for soft sells
                 if soft_sell_signal and not sell_signal:
                     try:
