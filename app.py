@@ -306,10 +306,8 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
         st.subheader("Bot Settings")
         symbol = st.text_input("Symbol", value=symbol, help="e.g., ETH/USDT, BTC/USDT")
         timeframe = st.selectbox("Timeframe", TIMEFRAME_OPTIONS, index=(TIMEFRAME_OPTIONS.index(timeframe) if timeframe in TIMEFRAME_OPTIONS else 0))
-        paper_trading = st.checkbox("Paper trading (no live orders)", value=bool(st.session_state.get('paper_trading', True)))
         st.session_state['symbol'] = symbol
         st.session_state['timeframe'] = timeframe
-        st.session_state['paper_trading'] = bool(paper_trading)
         st.caption("Settings apply when you start the bot. Restart to take effect.")
 
         st.subheader("Strategy Tuning")
@@ -508,7 +506,6 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
                 new_pid = _start_bot_process({
                     'BOT_SYMBOL': symbol,
                     'BOT_TIMEFRAME': timeframe,
-                    'BOT_PAPER_TRADING': 'true' if st.session_state.get('paper_trading', True) else 'false',
                     'BOT_AGGRESSIVENESS': st.session_state['aggr'],
                     'BOT_PREDICTION_THRESHOLD': st.session_state['threshold'],
                     'BOT_CONFIRMATIONS_REQUIRED_BUY': st.session_state['confirms'],
