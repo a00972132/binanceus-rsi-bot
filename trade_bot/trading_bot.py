@@ -641,6 +641,19 @@ def place_order(side: str, trade_size: float, current_price: float,
             'signal': calculate_macd(df)[1].iloc[-1],
             'volume_ratio': df['volume'].iloc[-1] / calculate_volume_ma(df)
         })
+        # Try to enrich with executed average price for better PnL/entry tracking
+        try:
+            ex_order = retry_api_call(lambda: exchange.fetch_order(order['id'], SYMBOL))
+            if ex_order:
+                avg = ex_order.get('average')
+                if avg is None:
+                    cost = ex_order.get('cost')
+                    filled = ex_order.get('filled') or 0
+                    avg = (float(cost) / float(filled)) if cost and filled else None
+                if avg:
+                    order['executed_price'] = float(avg)
+        except Exception:
+            pass
         return order
     except ccxt.InsufficientFunds as e:
         logging.error(f"Insufficient funds for {side} order: {e}")
@@ -791,6 +804,7 @@ def run_bot():
     model_retrain_interval = MODEL_RETRAIN_INTERVAL_DEFAULT
     current_position = 0.0
     entry_price = 0.0
+    avg_entry_price = 0.0  # cost basis for current position
     peak_price_since_entry = 0.0  # for per-position trailing stop
     last_exit_price = 0.0
     last_trade_side = None
@@ -1067,8 +1081,17 @@ def run_bot():
                 order = place_order('buy', trade_size, price, df_sig)
                 if order:
                     current_position += trade_size
-                    entry_price = price
-                    peak_price_since_entry = price
+                    # Use executed price if available, else observed price
+                    fill_px = float(order.get('executed_price') or order.get('price') or price)
+                    # Update cost basis
+                    if current_position > 0:
+                        prev_qty = max(current_position - trade_size, 0.0)
+                        if prev_qty <= 0:
+                            avg_entry_price = fill_px
+                        else:
+                            avg_entry_price = ((avg_entry_price * prev_qty) + (fill_px * trade_size)) / (prev_qty + trade_size)
+                    entry_price = fill_px
+                    peak_price_since_entry = fill_px
                     last_trade_side = 'buy'
                     last_entry_time = time.time()
 
@@ -1106,7 +1129,8 @@ def run_bot():
                     no_churn_atr_mult = float(os.getenv('BOT_NO_CHURN_ATR_MULT', '0.50'))
                 except Exception:
                     no_churn, min_profit_pct, no_churn_atr_mult = True, 0.003, 0.50
-                reached_profit = (entry_price > 0 and price >= entry_price * (1.0 + max(0.0, min_profit_pct)))
+                # Use cost basis for profit evaluation
+                reached_profit = (avg_entry_price > 0 and price >= avg_entry_price * (1.0 + max(0.0, min_profit_pct)))
                 allow_no_churn_exit = strong_bearish_now or (
                     entry_price > 0 and atr_val > 0 and price <= entry_price - atr_val * max(0.0, no_churn_atr_mult)
                 )
@@ -1143,18 +1167,22 @@ def run_bot():
                     logging.info("Strong bearish signal: selling full position")
                 if sell_size > 0:
                     order = place_order('sell', sell_size, price, df_sig)
-                    if order and entry_price > 0:
-                        profit_loss = (price - entry_price) / entry_price
+                    if order and avg_entry_price > 0:
+                        # Update realized P/L contribution
+                        profit_loss = (price - avg_entry_price) / avg_entry_price
                         risk_manager.update_trade_result(profit_loss)
                         last_exit_price = price
                         last_trade_side = 'sell'
                     # Decrease current position accordingly
                     current_position = max(current_position - sell_size, 0.0)
+                    if current_position == 0.0:
+                        avg_entry_price = 0.0
+                        peak_price_since_entry = 0.0
 
             # Manage take profits on open long position
             if current_position > 0:
                 tp_amount = manage_take_profits(
-                    current_position, entry_price, price, df)
+                    current_position, avg_entry_price or entry_price, price, df)
                 if tp_amount > 0:
                     order = place_order('sell', tp_amount, price, df_sig)
                     if order:
@@ -1163,7 +1191,7 @@ def run_bot():
                             f"Take profit executed, remaining position: {current_position:.6f} ETH")
 
             # Per-position trailing stop and ATR stop-loss (optional)
-            if current_position > 0 and entry_price > 0:
+            if current_position > 0 and (avg_entry_price > 0 or entry_price > 0):
                 # Track peak price since entry for trailing
                 peak_price_since_entry = max(peak_price_since_entry, price)
                 try:
@@ -1182,7 +1210,8 @@ def run_bot():
                     stop_mult = float(os.getenv('BOT_STOP_ATR_MULT', '2.0'))
                 except Exception:
                     stop_mult = 2.0
-                hard_stop_price = entry_price - max(0.0, atr_val) * stop_mult
+                basis_px = avg_entry_price or entry_price
+                hard_stop_price = basis_px - max(0.0, atr_val) * stop_mult
 
                 exit_reason = None
                 if price <= hard_stop_price:
@@ -1201,7 +1230,9 @@ def run_bot():
                             last_exit_price = price
                             last_trade_side = 'sell'
                             # reset peak since entry after closing
-                            peak_price_since_entry = 0.0 if current_position == 0.0 else peak_price_since_entry
+                            if current_position == 0.0:
+                                peak_price_since_entry = 0.0
+                                avg_entry_price = 0.0
 
             # Check trailing stop
             check_profit_loss(price)
