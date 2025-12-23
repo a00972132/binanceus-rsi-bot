@@ -293,7 +293,9 @@ def _render_header(pid_running: bool, pid: Optional[int], symbol: str, timeframe
         paper = bool(getattr(bot_mod, 'PAPER_TRADING', False))
     except Exception:
         pass
-    st.caption(f"Symbol: {symbol} • Timeframe: {timeframe} • Paper: {'On' if paper else 'Off'}")
+    paper_cfg = st.session_state.get("paper_trading")
+    paper_show = paper if paper_cfg is None else bool(paper_cfg)
+    st.caption(f"Symbol: {symbol} • Timeframe: {timeframe} • Paper: {'On' if paper_show else 'Off'}")
     col_a, col_b = st.columns([1, 3])
     with col_a:
         if st.button("Refresh now", use_container_width=True):
@@ -561,6 +563,90 @@ def _render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timefram
 
         return symbol, timeframe
 
+
+def _render_sidebar_simple(pid_running: bool, pid: Optional[int], symbol: str, timeframe: str) -> Tuple[str, str]:
+    with st.sidebar:
+        st.header("Bot")
+
+        symbol = st.text_input("Symbol", value=symbol, help="e.g., ETH/USDT")
+        timeframe = st.selectbox(
+            "Timeframe",
+            TIMEFRAME_OPTIONS,
+            index=(TIMEFRAME_OPTIONS.index(timeframe) if timeframe in TIMEFRAME_OPTIONS else 0),
+        )
+        st.session_state["symbol"] = symbol
+        st.session_state["timeframe"] = timeframe
+
+        st.session_state.setdefault("aggr", "balanced")
+        mode = st.selectbox(
+            "Mode",
+            ["conservative", "balanced", "aggressive"],
+            index=["conservative", "balanced", "aggressive"].index(st.session_state.get("aggr", "balanced")),
+        )
+        st.session_state["aggr"] = mode
+
+        paper = st.checkbox(
+            "Paper trading (no real orders)",
+            value=bool(st.session_state.get("paper_trading", True)),
+        )
+        st.session_state["paper_trading"] = paper
+        if not paper:
+            st.warning("Live trading is ON. Double-check your API keys and risk settings.")
+
+        diagnostics = st.checkbox(
+            "Verbose diagnostics",
+            value=bool(st.session_state.get("diagnostics", False)),
+            help="Adds extra reasoning to the logs; can be noisy.",
+        )
+        st.session_state["diagnostics"] = diagnostics
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Start", type="primary", disabled=pid_running, use_container_width=True):
+                new_pid = _start_bot_process(
+                    {
+                        "BOT_SYMBOL": symbol,
+                        "BOT_TIMEFRAME": timeframe,
+                        "BOT_AGGRESSIVENESS": st.session_state["aggr"],
+                        "BOT_PAPER_TRADING": "true" if st.session_state["paper_trading"] else "false",
+                        "BOT_DIAGNOSTICS": "true" if st.session_state["diagnostics"] else "false",
+                    }
+                )
+                if new_pid:
+                    st.session_state["bot_pid"] = new_pid
+                    _safe_rerun()
+        with col2:
+            if st.button("Stop", disabled=not pid_running, use_container_width=True):
+                _stop_bot_process(pid)
+                st.session_state["bot_pid"] = None
+                _safe_rerun()
+
+        with st.expander("Display", expanded=False):
+            auto_enabled = st.checkbox("Auto-refresh", value=bool(st.session_state.get("auto_refresh_enabled", True)))
+            refresh_sec = st.slider(
+                "Refresh interval (sec)",
+                2,
+                30,
+                int(st.session_state.get("refresh_sec", 5)),
+                1,
+            )
+            st.session_state["auto_refresh_enabled"] = auto_enabled
+            st.session_state["refresh_sec"] = refresh_sec
+
+            st.divider()
+            log_lines = st.slider("Log lines", 20, 1000, int(st.session_state.get("log_lines", 200)), 10)
+            newest_first = st.checkbox("Newest first", value=bool(st.session_state.get("log_newest_first", True)))
+            level_choice = st.selectbox(
+                "Level filter",
+                ["All", "ERROR", "WARNING", "INFO", "DEBUG"],
+                index=["All", "ERROR", "WARNING", "INFO", "DEBUG"].index(st.session_state.get("log_level_filter", "All")),
+            )
+            st.session_state["log_lines"] = log_lines
+            st.session_state["log_newest_first"] = newest_first
+            st.session_state["log_level_filter"] = level_choice
+
+        return symbol, timeframe
+
 def main():
     # Keep a lightweight periodic refresh (if available)
     refresh_sec = st.session_state.get("refresh_sec", 5)
@@ -599,7 +685,7 @@ def main():
     selected_timeframe = st.session_state.get('timeframe', getattr(bot, 'TIMEFRAME', '1m'))
     _render_header(pid_running, pid, selected_symbol, selected_timeframe)
     st.caption(f"Last refresh: {time.strftime('%H:%M:%S')}")
-    selected_symbol, selected_timeframe = _render_sidebar(pid_running, pid, selected_symbol, selected_timeframe)
+    selected_symbol, selected_timeframe = _render_sidebar_simple(pid_running, pid, selected_symbol, selected_timeframe)
 
     # Apply selection to imported bot module for UI data
     try:

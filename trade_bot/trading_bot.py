@@ -81,23 +81,45 @@ logging.info("Exchange configuration complete")
 
 # Trading Parameters
 SYMBOL = os.getenv('BOT_SYMBOL', 'ETH/USDT')
-TIMEFRAME = os.getenv('BOT_TIMEFRAME', '1m')  # 1‑minute candles
+# Default to a slower timeframe to reduce churn/fees impact.
+TIMEFRAME = os.getenv('BOT_TIMEFRAME', '15m')  # 15-minute candles
+# Keep the trade loop from firing multiple times per candle by default.
+def _timeframe_to_seconds(tf: str) -> int:
+    tf = (tf or "").strip().lower()
+    if not tf:
+        return 0
+    try:
+        unit = tf[-1]
+        value = int(tf[:-1])
+    except Exception:
+        return 0
+    if value <= 0:
+        return 0
+    if unit == "m":
+        return value * 60
+    if unit == "h":
+        return value * 60 * 60
+    if unit == "d":
+        return value * 60 * 60 * 24
+    if unit == "w":
+        return value * 60 * 60 * 24 * 7
+    return 0
 # Optional paper-trading (no live orders); set BOT_PAPER_TRADING=true to enable
 PAPER_TRADING = os.getenv('BOT_PAPER_TRADING', 'false').lower() in ('1', 'true', 'yes', 'y')
 RSI_PERIOD = 14
 SMA_PERIOD = 50
 TRAILING_STOP_PERCENT = 0.08  # 8% trailing stop
-# Base defaults (may be overridden by env/aggressiveness)
-MIN_TRADE_INTERVAL = 30  # seconds between trades
-MAX_TRADES_PER_HOUR = 20  # trade frequency limit
+# Trade pacing is computed below from TIMEFRAME/aggressiveness/env.
 RISK_PER_TRADE = 0.05  # 5% of portfolio per trade (base risk)
 TAKE_PROFIT_LEVELS = [0.01, 0.02, 0.03]
 POSITION_SCALE_OUT = [0.3, 0.3, 0.4]
 
 # Tuning knobs
 AGGR = os.getenv('BOT_AGGRESSIVENESS', 'balanced').lower()  # conservative|balanced|aggressive
-RSI_BUY_MAX = float(os.getenv('BOT_RSI_BUY_MAX', '70'))
-RSI_SELL_MIN = float(os.getenv('BOT_RSI_SELL_MIN', '30'))
+# With this bot's gating logic (buy if RSI < max, sell if RSI > min),
+# defaults should reflect "buy lower RSI, sell higher RSI".
+RSI_BUY_MAX = float(os.getenv('BOT_RSI_BUY_MAX', '35'))
+RSI_SELL_MIN = float(os.getenv('BOT_RSI_SELL_MIN', '65'))
 # Model threshold (probability price goes up)
 DEFAULT_THRESHOLDS = {'conservative': 0.70, 'balanced': 0.65, 'aggressive': 0.58}
 PREDICTION_THRESHOLD = float(os.getenv('BOT_PREDICTION_THRESHOLD', str(DEFAULT_THRESHOLDS.get(AGGR, 0.65))))
@@ -109,9 +131,11 @@ DEFAULT_SPREAD_NORMAL = {'conservative': 0.10, 'balanced': 0.12, 'aggressive': 0
 DEFAULT_SPREAD_VOL = {'conservative': 0.18, 'balanced': 0.22, 'aggressive': 0.25}
 MAX_SPREAD_PERCENT_NORMAL = float(os.getenv('BOT_MAX_SPREAD_PERCENT_NORMAL', str(DEFAULT_SPREAD_NORMAL.get(AGGR, 0.12))))
 MAX_SPREAD_PERCENT_VOLATILE = float(os.getenv('BOT_MAX_SPREAD_PERCENT_VOLATILE', str(DEFAULT_SPREAD_VOL.get(AGGR, 0.22))))
-# Interval and frequency overrides by aggressiveness
-MIN_TRADE_INTERVAL = int(os.getenv('BOT_MIN_TRADE_INTERVAL', str({'conservative': 45, 'balanced': 30, 'aggressive': 20}.get(AGGR, 30))))
-MAX_TRADES_PER_HOUR = int(os.getenv('BOT_MAX_TRADES_PER_HOUR', str({'conservative': 12, 'balanced': 20, 'aggressive': 30}.get(AGGR, 20))))
+# Interval and frequency overrides by aggressiveness (defaults tuned for slower, fee-aware trading)
+_tf_seconds = _timeframe_to_seconds(TIMEFRAME)
+_min_interval_default = max({'conservative': 600, 'balanced': 300, 'aggressive': 180}.get(AGGR, 300), _tf_seconds)
+MIN_TRADE_INTERVAL = int(os.getenv('BOT_MIN_TRADE_INTERVAL', str(_min_interval_default)))
+MAX_TRADES_PER_HOUR = int(os.getenv('BOT_MAX_TRADES_PER_HOUR', str({'conservative': 2, 'balanced': 2, 'aggressive': 4}.get(AGGR, 2))))
 
 # Log selected symbol/timeframe for visibility
 logging.info(f"Bot config => SYMBOL={SYMBOL}, TIMEFRAME={TIMEFRAME}")
@@ -180,8 +204,9 @@ class PredictiveTrader:
 
     def prepare_labels(self, df: pd.DataFrame) -> np.ndarray:
         """Create binary labels for price direction (1 for up, 0 for down)."""
-        future_returns = df['close'].shift(-1).pct_change()
-        return (future_returns > 0).astype(int)
+        # Label each row by the *next* candle return (t -> t+1), aligned to time t.
+        future_returns = df['close'].pct_change().shift(-1)
+        return (future_returns > 0).astype(int).to_numpy()
 
     def train_model(self, df: pd.DataFrame) -> bool:
         """Train the ML model using available data."""
@@ -281,8 +306,12 @@ class RiskManager:
             return False
         return True
 
-    def update_trade_result(self, profit_loss: float) -> None:
-        self.daily_loss += profit_loss
+    def update_trade_result(self, profit_loss_fraction_of_equity: float) -> None:
+        """
+        Track cumulative daily P/L as a fraction of account equity.
+        Example: -0.01 means -1% on the day.
+        """
+        self.daily_loss += profit_loss_fraction_of_equity
         self.daily_trades += 1
 
 
@@ -881,10 +910,6 @@ def run_bot():
                 trend_bullish = check_trend(df_sig, sma_val, price)
                 volume_confirmed = check_volume(df_sig)
                 momentum_score = calculate_momentum_score(df_sig)
-                if iteration % 10 == 0:  # Every 10 iterations
-                    print(f"RSI: {rsi_val:.2f}")
-                    print(f"Trend: {'Bullish' if trend_bullish else 'Bearish'}")
-                    print(f"ML Up Probability: {up_probability:.2%}\n")
             except Exception as e:
                 logging.error(f"Error calculating indicators: {e}")
 
@@ -912,6 +937,10 @@ def run_bot():
             except Exception as e:
                 logging.error(f"Error in price prediction: {e}")
                 up_probability = 0.5
+            if iteration % 10 == 0:  # Every 10 iterations
+                print(f"RSI: {rsi_val:.2f}")
+                print(f"Trend: {'Bullish' if trend_bullish else 'Bearish'}")
+                print(f"ML Up Probability: {up_probability:.2%}\n")
 
             # Fetch balance and compute portfolio value
             try:
@@ -1111,7 +1140,7 @@ def run_bot():
                 except Exception:
                     atr_within_hold_mult = 0.25
                 now_ts = time.time()
-                hold_active = (entry_price > 0 and current_position > 0 and (now_ts - (locals().get('last_entry_time', 0.0) or 0.0)) < min_hold_sec)
+                hold_active = (entry_price > 0 and current_position > 0 and (now_ts - last_entry_time) < min_hold_sec)
                 allow_sell_during_hold = strong_bearish_now or (
                     entry_price > 0 and atr_val > 0 and price <= entry_price - atr_val * max(0.0, atr_within_hold_mult)
                 )
@@ -1125,7 +1154,8 @@ def run_bot():
                 # Optional no-churn: do not sell until a small profit is reached, unless strong-bear or stops
                 try:
                     no_churn = os.getenv('BOT_NO_CHURN_BEFORE_PROFIT', 'true').lower() in ('1','true','yes','y')
-                    min_profit_pct = float(os.getenv('BOT_MIN_PROFIT_PCT', '0.003'))  # 0.3%
+                    # Default profit gate increased to better clear fees/spread for market orders.
+                    min_profit_pct = float(os.getenv('BOT_MIN_PROFIT_PCT', '0.01'))  # 1.0%
                     no_churn_atr_mult = float(os.getenv('BOT_NO_CHURN_ATR_MULT', '0.50'))
                 except Exception:
                     no_churn, min_profit_pct, no_churn_atr_mult = True, 0.003, 0.50
@@ -1167,10 +1197,12 @@ def run_bot():
                     logging.info("Strong bearish signal: selling full position")
                 if sell_size > 0:
                     order = place_order('sell', sell_size, price, df_sig)
-                    if order and avg_entry_price > 0:
-                        # Update realized P/L contribution
-                        profit_loss = (price - avg_entry_price) / avg_entry_price
-                        risk_manager.update_trade_result(profit_loss)
+                    if order and avg_entry_price > 0 and portfolio_value_usd > 0:
+                        # Update realized P/L as a fraction of equity (weights by the size sold).
+                        trade_return = (price - avg_entry_price) / avg_entry_price
+                        sold_notional = sell_size * price
+                        pnl_fraction_of_equity = trade_return * (sold_notional / portfolio_value_usd)
+                        risk_manager.update_trade_result(pnl_fraction_of_equity)
                         last_exit_price = price
                         last_trade_side = 'sell'
                     # Decrease current position accordingly
