@@ -843,7 +843,7 @@ def main():
                 if 'macd' in inds and 'signal' in inds:
                     st.line_chart(pd.DataFrame({"macd": inds["macd"], "signal": inds["signal"]}, index=dfv.index))
 
-        # Latest indicators summary with criteria coloring
+        # Latest indicators summary + trade checklist (simplified)
         try:
             rsi_val = float(bot.calculate_rsi(df))
             sma_period = int(getattr(bot, 'SMA_PERIOD', 50))
@@ -853,14 +853,15 @@ def main():
             latest_signal = float(signal_line.iloc[-1])
 
             # Try to compute ML probability (train quickly in UI context)
-            up_prob = None
             try:
                 if hasattr(bot, 'trader'):
                     # safe train; ignore failures
                     bot.trader.train_model(df)
                     up_prob = float(bot.trader.predict_direction(df))
+                else:
+                    up_prob = 0.5
             except Exception:
-                up_prob = None
+                up_prob = 0.5
 
             # Criteria thresholds (prefer UI session, fallback to bot)
             rsi_buy_max = float(st.session_state.get('rsi_buy_max', getattr(bot, 'RSI_BUY_MAX', 70.0)))
@@ -886,146 +887,10 @@ def main():
             # Confirmations count
             confs_buy_met = int(sum(1 for c in [macd_up, trend_bullish, volume_confirmed] if c))
             confs_sell_met = int(sum(1 for c in [macd_down, trend_bearish, volume_confirmed] if c))
+            st.subheader("Trade Checklist")
+            st.caption("This matches the bot's gating: signal checks + execution guards.")
 
-            # Helpers for color
-            def colorize(text: str, ok: bool) -> str:
-                color = "#16a34a" if ok else "#dc2626"  # green/red
-                return f"<span style='color:{color};font-weight:600'>{text}</span>"
-            def color3(text: str, state: str) -> str:
-                # state: 'good'|'neutral'|'bad'
-                c = {'good': '#16a34a', 'neutral': '#f59e0b', 'bad': '#dc2626'}.get(state, '#dc2626')
-                return f"<span style='color:{c};font-weight:600'>{text}</span>"
-
-            # ML probability badge
-            ml_ok_buy = (up_prob is not None) and (up_prob > pred_thresh)
-            ml_ok_sell = (up_prob is not None) and (up_prob < (1 - pred_thresh))
-            ml_text = "N/A" if up_prob is None else f"{up_prob:.2f}"
-            st.markdown(
-                f"Model up-prob: {colorize(ml_text + ' vs ' + str(round(pred_thresh,2)), ml_ok_buy)}",
-                unsafe_allow_html=True,
-            )
-
-            # Compact decision summary badge (Buy-leaning / Sell-leaning / Neutral)
-            buy_votes = 0
-            sell_votes = 0
-            # Model vote
-            if up_prob is not None:
-                if up_prob > pred_thresh:
-                    buy_votes += 1
-                elif up_prob < (1 - pred_thresh):
-                    sell_votes += 1
-            # RSI vote
-            if rsi_val < rsi_buy_max:
-                buy_votes += 1
-            if rsi_val > rsi_sell_min:
-                sell_votes += 1
-            # Trend vote
-            if price > sma_val:
-                buy_votes += 1
-            elif price < sma_val:
-                sell_votes += 1
-            # MACD vote
-            if macd_up:
-                buy_votes += 1
-            elif macd_down:
-                sell_votes += 1
-
-            score = buy_votes - sell_votes
-            # Also consider confirmations directly
-            buy_ok = (confs_buy_met >= confirms_required_buy) and (up_prob is None or up_prob > pred_thresh)
-            sell_ok = (confs_sell_met >= confirms_required_sell) and (up_prob is None or up_prob < (1 - pred_thresh))
-
-            def pill(text: str, state: str) -> str:
-                if state == 'buy':
-                    bg, fg = '#16a34a', '#ffffff'  # green
-                elif state == 'sell':
-                    bg, fg = '#dc2626', '#ffffff'  # red
-                else:
-                    bg, fg = '#f59e0b', '#111111'  # yellow
-                return f"<span style='background-color:{bg};color:{fg};padding:4px 10px;border-radius:999px;font-weight:700'>{text}</span>"
-
-            if score >= 2 or buy_ok:
-                summary = pill('Buy leaning', 'buy')
-            elif score <= -2 or sell_ok:
-                summary = pill('Sell leaning', 'sell')
-            else:
-                summary = pill('Neutral', 'neutral')
-
-            st.markdown(f"Decision Summary: {summary}", unsafe_allow_html=True)
-
-            # Buy and Sell panels side-by-side
-            bc, sc = st.columns(2)
-            with bc:
-                st.caption("Buy Criteria")
-                # Three-state color for RSI: green (< sell_min), yellow (between), red (>= buy_max)
-                if rsi_val <= rsi_sell_min:
-                    rsi_state_buy = 'good'
-                elif rsi_val < rsi_buy_max:
-                    rsi_state_buy = 'neutral'
-                else:
-                    rsi_state_buy = 'bad'
-                st.markdown(
-                    f"RSI(14): {color3(f'{rsi_val:.2f} < {rsi_buy_max:.0f}', rsi_state_buy)}",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f"Trend (Price>SMA{str(sma_period)}): {colorize(f'{price:,.2f} > {sma_val:,.2f}', price > sma_val)}",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f"MACD>Signal: {colorize(f'{latest_macd:.4f} > {latest_signal:.4f}', macd_up)}",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f"Volume boost x{vol_mult:.2f}: {colorize('True' if volume_confirmed else 'False', volume_confirmed)}",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f"Confirmations: {colorize(f'{confs_buy_met}/{confirms_required_buy}', confs_buy_met >= confirms_required_buy)}",
-                    unsafe_allow_html=True,
-                )
-
-            with sc:
-                st.caption("Sell Criteria")
-                # Three-state color for RSI: green (> buy_max), yellow (between), red (<= sell_min)
-                if rsi_val >= rsi_buy_max:
-                    rsi_state_sell = 'good'
-                elif rsi_val > rsi_sell_min:
-                    rsi_state_sell = 'neutral'
-                else:
-                    rsi_state_sell = 'bad'
-                st.markdown(
-                    f"RSI(14): {color3(f'{rsi_val:.2f} > {rsi_sell_min:.0f}', rsi_state_sell)}",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f"Trend (Price<SMA{str(sma_period)}): {colorize(f'{price:,.2f} < {sma_val:,.2f}', price < sma_val)}",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f"MACD<Signal: {colorize(f'{latest_macd:.4f} < {latest_signal:.4f}', macd_down)}",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f"Volume boost x{vol_mult:.2f}: {colorize('True' if volume_confirmed else 'False', volume_confirmed)}",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f"Confirmations: {colorize(f'{confs_sell_met}/{confirms_required_sell}', confs_sell_met >= confirms_required_sell)}",
-                    unsafe_allow_html=True,
-                )
-
-            # Legend / tips
-            with st.expander("Legend: How to read colors", expanded=False):
-                st.markdown(
-                    "- Green = condition strongly supports action (buy/sell)\n"
-                    "- Yellow = neutral zone (neither strong buy nor sell)\n"
-                    "- Red = condition does not support action\n"
-                    "- Model up-prob must exceed threshold for buys (or be below 1-threshold for sells)\n"
-                    "- Confirmations count checks MACD direction, Trend alignment (Price vs SMA), and Volume boost"
-                )
-
-            # Trade Gates: end-to-end checklist for Buy and Sell
+            # Trade checklist: end-to-end checklist for Buy and Sell
             try:
                 # Balance and portfolio
                 try:
@@ -1079,8 +944,8 @@ def main():
                 pos_cap_ok = clamped_value <= pos_cap_value if pos_cap_value > 0 else False
 
                 # Gates per side
-                ml_buy_ok = (up_prob is not None) and (up_prob > pred_thresh)
-                ml_sell_ok = (up_prob is not None) and (up_prob < (1 - pred_thresh))
+                ml_buy_ok = up_prob > pred_thresh
+                ml_sell_ok = up_prob < (1 - pred_thresh)
                 rsi_buy_ok = rsi_val < rsi_buy_max
                 rsi_sell_ok = rsi_val > rsi_sell_min
                 conf_buy_ok = (confs_buy_met >= confirms_required_buy)
@@ -1088,33 +953,72 @@ def main():
                 size_ok = est_size > 0
                 have_eth = free_eth > 0.0
 
-                # Helpers for gate badge
-                def gate(label: str, ok: bool, detail: str = "") -> str:
-                    c = "#16a34a" if ok else "#dc2626"
-                    text = f"{label}: {detail}" if detail else label
-                    return f"<span style='color:{c};font-weight:600'>{text}</span>"
+                def _pf(ok: bool) -> str:
+                    return "PASS" if ok else "FAIL"
 
-                gcol1, gcol2 = st.columns(2)
-                with gcol1:
-                    st.caption("Trade Gates — Buy")
-                    st.markdown(gate("ML", ml_buy_ok, ("ok" if ml_buy_ok else "below threshold")), unsafe_allow_html=True)
-                    st.markdown(gate("RSI", rsi_buy_ok, f"{rsi_val:.1f} < {rsi_buy_max:.0f}"), unsafe_allow_html=True)
-                    st.markdown(gate("Confirmations", conf_buy_ok, f"{confs_buy_met}/{confirms_required_buy}"), unsafe_allow_html=True)
-                    st.markdown(gate("Spread", spread_ok, f"{spread_pct:.2f}% ≤ {spread_cap:.2f}%"), unsafe_allow_html=True)
-                    st.markdown(gate("Size>0", size_ok, f"{est_size:.6f} ETH"), unsafe_allow_html=True)
-                    st.markdown(gate("Position cap", pos_cap_ok,
-                                      f"proposed=${est_value:,.2f}; cap=${pos_cap_value:,.2f}; will use=${clamped_value:,.2f}"),
-                                unsafe_allow_html=True)
-                with gcol2:
-                    st.caption("Trade Gates — Sell")
-                    st.markdown(gate("ML", ml_sell_ok, ("ok" if ml_sell_ok else "above 1-threshold")), unsafe_allow_html=True)
-                    st.markdown(gate("RSI", rsi_sell_ok, f"{rsi_val:.1f} > {rsi_sell_min:.0f}"), unsafe_allow_html=True)
-                    st.markdown(gate("Confirmations", conf_sell_ok, f"{confs_sell_met}/{confirms_required_sell}"), unsafe_allow_html=True)
-                    st.markdown(gate("Spread", spread_ok, f"{spread_pct:.2f}% ≤ {spread_cap:.2f}%"), unsafe_allow_html=True)
-                    st.markdown(gate("Holdings", have_eth, f"{free_eth:.6f} ETH free"), unsafe_allow_html=True)
-                    st.markdown(gate("Position cap", pos_cap_ok,
-                                      f"proposed=${est_value:,.2f}; cap=${pos_cap_value:,.2f}; will use=${clamped_value:,.2f}"),
-                                unsafe_allow_html=True)
+                checklist_rows = [
+                    {
+                        "Check": "Model up-prob",
+                        "Value": f"{up_prob:.2f} (buy>{pred_thresh:.2f}, sell<{(1 - pred_thresh):.2f})",
+                        "Buy": _pf(ml_buy_ok),
+                        "Sell": _pf(ml_sell_ok),
+                    },
+                    {
+                        "Check": "RSI(14)",
+                        "Value": f"{rsi_val:.1f} (buy<{rsi_buy_max:.0f}, sell>{rsi_sell_min:.0f})",
+                        "Buy": _pf(rsi_buy_ok),
+                        "Sell": _pf(rsi_sell_ok),
+                    },
+                    {
+                        "Check": f"Trend vs SMA{sma_period}",
+                        "Value": f"price={price:,.2f}, sma={sma_val:,.2f}",
+                        "Buy": _pf(price > sma_val),
+                        "Sell": _pf(price < sma_val),
+                    },
+                    {
+                        "Check": "MACD",
+                        "Value": f"macd={latest_macd:.4f}, signal={latest_signal:.4f}",
+                        "Buy": _pf(macd_up),
+                        "Sell": _pf(macd_down),
+                    },
+                    {
+                        "Check": f"Volume confirm (x{vol_mult:.2f})",
+                        "Value": "confirmed" if volume_confirmed else "not confirmed",
+                        "Buy": _pf(volume_confirmed),
+                        "Sell": _pf(volume_confirmed),
+                    },
+                    {
+                        "Check": "Confirmations",
+                        "Value": f"buy={confs_buy_met}/{confirms_required_buy}, sell={confs_sell_met}/{confirms_required_sell}",
+                        "Buy": _pf(conf_buy_ok),
+                        "Sell": _pf(conf_sell_ok),
+                    },
+                    {
+                        "Check": "Spread",
+                        "Value": f"{spread_pct:.2f}% (cap {spread_cap:.2f}%, {regime})",
+                        "Buy": _pf(spread_ok),
+                        "Sell": _pf(spread_ok),
+                    },
+                    {
+                        "Check": "Size / Holdings",
+                        "Value": f"est_size={est_size:.6f} ETH, free_eth={free_eth:.6f}",
+                        "Buy": _pf(size_ok),
+                        "Sell": _pf(have_eth),
+                    },
+                    {
+                        "Check": "Position cap",
+                        "Value": f"cap=${pos_cap_value:,.2f}, will_use=${clamped_value:,.2f}",
+                        "Buy": _pf(pos_cap_ok),
+                        "Sell": _pf(pos_cap_ok),
+                    },
+                ]
+                st.table(pd.DataFrame(checklist_rows))
+
+                buy_allowed = all([ml_buy_ok, rsi_buy_ok, conf_buy_ok, spread_ok, size_ok, pos_cap_ok])
+                sell_allowed = all([ml_sell_ok, rsi_sell_ok, conf_sell_ok, spread_ok, have_eth, pos_cap_ok])
+                c1, c2 = st.columns(2)
+                c1.metric("Buy allowed now", "YES" if buy_allowed else "NO")
+                c2.metric("Sell allowed now", "YES" if sell_allowed else "NO")
 
                 # Blocking reasons
                 buy_reasons = []
