@@ -1012,7 +1012,19 @@ def main():
                         "Sell": _pf(pos_cap_ok),
                     },
                 ]
-                st.table(pd.DataFrame(checklist_rows))
+                checklist_df = pd.DataFrame(checklist_rows)
+                try:
+                    def _pass_fail_style(v: object) -> str:
+                        if v == "PASS":
+                            return "color: #16a34a; font-weight: 700;"
+                        if v == "FAIL":
+                            return "color: #dc2626; font-weight: 700;"
+                        return ""
+
+                    styled = checklist_df.style.applymap(_pass_fail_style, subset=["Buy", "Sell"])
+                    st.dataframe(styled, use_container_width=True, hide_index=True)
+                except Exception:
+                    st.table(checklist_df)
 
                 buy_allowed = all([ml_buy_ok, rsi_buy_ok, conf_buy_ok, spread_ok, size_ok, pos_cap_ok])
                 sell_allowed = all([ml_sell_ok, rsi_sell_ok, conf_sell_ok, spread_ok, have_eth, pos_cap_ok])
