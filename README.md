@@ -1,13 +1,12 @@
-# BinanceUS Breakout Bot
+# BinanceUS ETH Context Bot
 
-This repo now contains a smaller long-only breakout bot and a matching backtest.
+This repo now contains a smaller long-only ETH bot, a matching backtest, and an offline research loop.
 
-The strategy is intentionally simple:
-- Only trade in an uptrend: price > fast SMA > slow SMA
-- Enter on strength: RSI stays in a momentum zone and price breaks above the recent high
-- Require momentum confirmation: MACD histogram positive and improving
-- Risk a larger fixed fraction of equity per trade
-- Allow a limited add-on into winning trades
+The current paper-trading default strategy is:
+- Only trade ETH when BTC is in a `4h` uptrend
+- Only trade ETH when the `ETH/BTC` relative-strength ratio is also in a `4h` uptrend
+- Enter ETH on `1h` volatility-expansion breakout conditions
+- Risk a fixed fraction of equity per trade
 - Exit on stop loss, ATR trailing stop, or trend failure
 
 ## Quick Start
@@ -46,6 +45,16 @@ The strategy is intentionally simple:
 - `BOT_MAX_POSITION_FRACTION`
 - `BOT_STOP_ATR_MULT`
 - `BOT_BREAKOUT_LOOKBACK`
+- `BOT_MIN_VOLUME_RATIO`
+- `BOT_MIN_ATR_RATIO`
+- `BOT_REGIME_SYMBOL`
+- `BOT_REGIME_TIMEFRAME`
+- `BOT_REGIME_FAST_SMA_PERIOD`
+- `BOT_REGIME_SLOW_SMA_PERIOD`
+- `BOT_RELATIVE_STRENGTH_SYMBOL`
+- `BOT_RELATIVE_STRENGTH_TIMEFRAME`
+- `BOT_RELATIVE_STRENGTH_FAST_SMA_PERIOD`
+- `BOT_RELATIVE_STRENGTH_SLOW_SMA_PERIOD`
 - `BOT_ADD_ON_ENABLED`
 - `BOT_MAX_ADD_ONS`
 - `BOT_ADD_ON_TRIGGER_R`
@@ -61,7 +70,7 @@ The strategy is intentionally simple:
 - Or customize:
   - `.venv/bin/python utils/backtest_strategy.py --symbol ETH/USDT --timeframe 1h --days 120`
 
-The backtest uses public Binance US candles and the same breakout/trailing logic as the live bot.
+The backtest uses public Binance US candles and the same strategy family as the live bot, including cross-asset BTC context filters.
 
 ## Research Loop
 
@@ -73,7 +82,7 @@ The backtest uses public Binance US candles and the same breakout/trailing logic
 - Run one research evaluation:
   - `make research-eval`
   - or `.venv/bin/python -m research.run_experiment --tag test`
-- Results are written to `research/results/latest.json` and `research/results/results.tsv`
+- Results are written to `research/results/latest.json`, `research/results/latest.md`, and `research/results/results.tsv`
 
 This borrows the core autoresearch idea safely: the agent can iterate on a small strategy surface while evaluation stays fixed and the live bot stays isolated.
 
@@ -86,4 +95,4 @@ This borrows the core autoresearch idea safely: the agent can iterate on a small
 
 ## Important
 
-No bot can guarantee profit. Use paper trading and backtests first, then compare strategy return against buy-and-hold before risking live capital.
+No bot can guarantee profit. The current candidate is promoted for paper trading by the repo's evaluator, not for live capital. Keep it in paper mode until live paper results match the research character.

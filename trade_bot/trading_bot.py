@@ -71,8 +71,8 @@ DIAGNOSTICS = os.getenv("BOT_DIAGNOSTICS", "false").lower() in {"1", "true", "ye
 FAST_SMA_PERIOD = int(os.getenv("BOT_FAST_SMA_PERIOD", "20"))
 SLOW_SMA_PERIOD = int(os.getenv("BOT_SLOW_SMA_PERIOD", "100"))
 RSI_PERIOD = int(os.getenv("BOT_RSI_PERIOD", "14"))
-RSI_ENTRY_MIN = float(os.getenv("BOT_RSI_ENTRY_MIN", "55"))
-RSI_ENTRY_MAX = float(os.getenv("BOT_RSI_ENTRY_MAX", "80"))
+RSI_ENTRY_MIN = float(os.getenv("BOT_RSI_ENTRY_MIN", "52"))
+RSI_ENTRY_MAX = float(os.getenv("BOT_RSI_ENTRY_MAX", "75"))
 RSI_EXIT_MIN = float(os.getenv("BOT_RSI_EXIT_MIN", "45"))
 RISK_PER_TRADE = float(os.getenv("BOT_RISK_PER_TRADE", "0.02"))
 MAX_POSITION_FRACTION = float(os.getenv("BOT_MAX_POSITION_FRACTION", "0.40"))
@@ -82,8 +82,19 @@ MAX_SPREAD_PERCENT = float(os.getenv("BOT_MAX_SPREAD_PERCENT", "0.20"))
 MIN_STOP_PCT = float(os.getenv("BOT_MIN_STOP_PCT", "0.012"))
 MIN_TRADE_INTERVAL = int(os.getenv("BOT_MIN_TRADE_INTERVAL", "3600"))
 MAX_TRADES_PER_DAY = int(os.getenv("BOT_MAX_TRADES_PER_DAY", "3"))
-BREAKOUT_LOOKBACK = int(os.getenv("BOT_BREAKOUT_LOOKBACK", "20"))
-ADD_ON_ENABLED = os.getenv("BOT_ADD_ON_ENABLED", "true").lower() in {"1", "true", "yes", "y"}
+BREAKOUT_LOOKBACK = int(os.getenv("BOT_BREAKOUT_LOOKBACK", "15"))
+MIN_VOLUME_RATIO = float(os.getenv("BOT_MIN_VOLUME_RATIO", "1.15"))
+ATR_EXPANSION_WINDOW = int(os.getenv("BOT_ATR_EXPANSION_WINDOW", "20"))
+MIN_ATR_RATIO = float(os.getenv("BOT_MIN_ATR_RATIO", "1.00"))
+REGIME_SYMBOL = os.getenv("BOT_REGIME_SYMBOL", "BTC/USDT")
+REGIME_TIMEFRAME = os.getenv("BOT_REGIME_TIMEFRAME", "4h")
+REGIME_FAST_SMA_PERIOD = int(os.getenv("BOT_REGIME_FAST_SMA_PERIOD", "20"))
+REGIME_SLOW_SMA_PERIOD = int(os.getenv("BOT_REGIME_SLOW_SMA_PERIOD", "50"))
+RELATIVE_STRENGTH_SYMBOL = os.getenv("BOT_RELATIVE_STRENGTH_SYMBOL", "BTC/USDT")
+RELATIVE_STRENGTH_TIMEFRAME = os.getenv("BOT_RELATIVE_STRENGTH_TIMEFRAME", "4h")
+RELATIVE_STRENGTH_FAST_SMA_PERIOD = int(os.getenv("BOT_RELATIVE_STRENGTH_FAST_SMA_PERIOD", "20"))
+RELATIVE_STRENGTH_SLOW_SMA_PERIOD = int(os.getenv("BOT_RELATIVE_STRENGTH_SLOW_SMA_PERIOD", "50"))
+ADD_ON_ENABLED = os.getenv("BOT_ADD_ON_ENABLED", "false").lower() in {"1", "true", "yes", "y"}
 MAX_ADD_ONS = int(os.getenv("BOT_MAX_ADD_ONS", "1"))
 ADD_ON_TRIGGER_R = float(os.getenv("BOT_ADD_ON_TRIGGER_R", "1.0"))
 ADD_ON_RISK_FRACTION = float(os.getenv("BOT_ADD_ON_RISK_FRACTION", "0.50"))
@@ -137,9 +148,13 @@ def retry_api_call(api_func, retries: int = 3, delay: int = 2):
     return None
 
 
-def fetch_data(limit: int = 500) -> Optional[pd.DataFrame]:
+def fetch_data(
+    limit: int = 500, symbol: Optional[str] = None, timeframe: Optional[str] = None
+) -> Optional[pd.DataFrame]:
+    market_symbol = symbol or SYMBOL
+    candle_tf = timeframe or TIMEFRAME
     data = retry_api_call(
-        lambda: exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=limit)
+        lambda: exchange.fetch_ohlcv(market_symbol, timeframe=candle_tf, limit=limit)
     )
     if not data:
         return None
@@ -194,6 +209,57 @@ def calculate_macd(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
     ).mean()
     signal_line = macd_line.ewm(span=9, adjust=False).mean()
     return macd_line, signal_line
+
+
+def compute_trend_flag(df: pd.DataFrame, fast_period: int, slow_period: int) -> Optional[bool]:
+    if df.empty or len(df) < slow_period + 5:
+        return None
+    close = df["close"]
+    fast = close.rolling(window=fast_period).mean().iloc[-1]
+    slow = close.rolling(window=slow_period).mean().iloc[-1]
+    if pd.isna(fast) or pd.isna(slow):
+        return None
+    return bool(float(close.iloc[-1]) > float(fast) > float(slow))
+
+
+def compute_regime_trend_up() -> Optional[bool]:
+    df = fetch_data(symbol=REGIME_SYMBOL, timeframe=REGIME_TIMEFRAME)
+    if df is None:
+        return None
+    return compute_trend_flag(df, REGIME_FAST_SMA_PERIOD, REGIME_SLOW_SMA_PERIOD)
+
+
+def compute_relative_strength_up() -> Optional[bool]:
+    if not RELATIVE_STRENGTH_SYMBOL or not RELATIVE_STRENGTH_TIMEFRAME:
+        return True
+    base_df = fetch_data(symbol=SYMBOL, timeframe=RELATIVE_STRENGTH_TIMEFRAME)
+    benchmark_df = fetch_data(symbol=RELATIVE_STRENGTH_SYMBOL, timeframe=RELATIVE_STRENGTH_TIMEFRAME)
+    if base_df is None or benchmark_df is None:
+        return None
+    joined = pd.concat(
+        [
+            base_df["close"].rename("base_close"),
+            benchmark_df["close"].rename("benchmark_close"),
+        ],
+        axis=1,
+    ).dropna()
+    if len(joined) < RELATIVE_STRENGTH_SLOW_SMA_PERIOD + 5:
+        return None
+    ratio = joined["base_close"] / joined["benchmark_close"]
+    fast = ratio.rolling(window=RELATIVE_STRENGTH_FAST_SMA_PERIOD).mean().iloc[-1]
+    slow = ratio.rolling(window=RELATIVE_STRENGTH_SLOW_SMA_PERIOD).mean().iloc[-1]
+    if pd.isna(fast) or pd.isna(slow):
+        return None
+    return bool(float(ratio.iloc[-1]) > float(fast) > float(slow))
+
+
+def build_entry_context() -> Dict[str, bool]:
+    regime_trend_up = compute_regime_trend_up()
+    relative_strength_up = compute_relative_strength_up()
+    return {
+        "regime_trend_up": bool(regime_trend_up),
+        "relative_strength_up": bool(relative_strength_up),
+    }
 
 
 def get_order_book_spread() -> Tuple[Optional[float], Optional[float], Optional[float]]:
@@ -386,6 +452,8 @@ def build_snapshot(df: pd.DataFrame) -> Dict[str, float]:
     close = float(df["close"].iloc[-1])
     breakout_window = df["high"].iloc[:-1].tail(BREAKOUT_LOOKBACK)
     breakout_level = float(breakout_window.max()) if not breakout_window.empty else close
+    volume_avg = float(df["volume"].rolling(window=20).mean().iloc[-1])
+    atr_avg_range = float((df["high"] - df["low"]).rolling(window=ATR_EXPANSION_WINDOW).mean().iloc[-1])
     return {
         "price": close,
         "fast_sma": fast_sma,
@@ -395,22 +463,34 @@ def build_snapshot(df: pd.DataFrame) -> Dict[str, float]:
         "macd_hist": macd_hist,
         "prev_macd_hist": prev_macd_hist,
         "breakout_level": breakout_level,
+        "volume": float(df["volume"].iloc[-1]),
+        "volume_avg": volume_avg,
+        "atr_avg_range": atr_avg_range,
     }
 
 
 def should_enter_long(snapshot: Dict[str, float]) -> Tuple[bool, str]:
+    regime_trend_up = snapshot.get("regime_trend_up", True)
+    relative_strength_up = snapshot.get("relative_strength_up", True)
     trend_up = snapshot["price"] > snapshot["fast_sma"] > snapshot["slow_sma"]
     in_rsi_zone = RSI_ENTRY_MIN <= snapshot["rsi"] <= RSI_ENTRY_MAX
     breakout = snapshot["price"] >= snapshot["breakout_level"] * (1 + ENTRY_BUFFER_PCT)
     momentum_turning = snapshot["macd_hist"] > 0 and snapshot["macd_hist"] >= snapshot["prev_macd_hist"]
+    volume_confirmed = snapshot["volume"] >= snapshot["volume_avg"] * MIN_VOLUME_RATIO
+    atr_ratio = snapshot["atr"] / snapshot["atr_avg_range"] if snapshot["atr_avg_range"] > 0 else 0.0
+    atr_expanding = atr_ratio >= MIN_ATR_RATIO
     checks = {
+        "btc_regime": regime_trend_up,
+        "eth_vs_btc": relative_strength_up,
         "trend_up": trend_up,
         "rsi_strength": in_rsi_zone,
         "breakout": breakout,
         "macd_turn": momentum_turning,
+        "volume": volume_confirmed,
+        "atr_expand": atr_expanding,
     }
     if all(checks.values()):
-        return True, "breakout trend entry"
+        return True, "context breakout entry"
     if DIAGNOSTICS:
         logging.info("No entry: %s", checks)
     return False, ", ".join(key for key, value in checks.items() if not value)
@@ -465,7 +545,7 @@ def sync_state_with_balance(state: PositionState, balance: Dict[str, Any]) -> Po
 def run_bot() -> None:
     state = load_position_state()
     logging.info(
-        "Bot config | symbol=%s timeframe=%s paper=%s fast=%s slow=%s rsi-entry=[%.1f, %.1f] breakout=%s stop_atr=%.1f add_on=%s",
+        "Bot config | symbol=%s timeframe=%s paper=%s fast=%s slow=%s rsi-entry=[%.1f, %.1f] breakout=%s vol=%.2f atr>=%.2f btc-regime=%s/%s rs=%s/%s add_on=%s",
         SYMBOL,
         TIMEFRAME,
         PAPER_TRADING,
@@ -474,7 +554,12 @@ def run_bot() -> None:
         RSI_ENTRY_MIN,
         RSI_ENTRY_MAX,
         BREAKOUT_LOOKBACK,
-        STOP_ATR_MULT,
+        MIN_VOLUME_RATIO,
+        MIN_ATR_RATIO,
+        REGIME_SYMBOL,
+        REGIME_TIMEFRAME,
+        RELATIVE_STRENGTH_SYMBOL,
+        RELATIVE_STRENGTH_TIMEFRAME,
         ADD_ON_ENABLED,
     )
 
@@ -489,6 +574,7 @@ def run_bot() -> None:
 
             df_sig = df.iloc[:-1] if len(df) > 1 else df
             snapshot = build_snapshot(df_sig)
+            snapshot.update(build_entry_context())
             state = sync_state_with_balance(state, balance)
 
             if state.is_open():

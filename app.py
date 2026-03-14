@@ -22,17 +22,17 @@ DEFAULTS = {
     "diagnostics": True,
     "fast_sma": 20,
     "slow_sma": 100,
-    "rsi_entry_min": 55,
-    "rsi_entry_max": 80,
+    "rsi_entry_min": 52,
+    "rsi_entry_max": 75,
     "rsi_exit_min": 45,
     "risk_per_trade": 2.0,
     "max_position_fraction": 40.0,
     "stop_atr_mult": 2.5,
-    "breakout_lookback": 20,
-    "add_on_enabled": True,
-    "max_add_ons": 1,
+    "breakout_lookback": 15,
+    "add_on_enabled": False,
+    "max_add_ons": 0,
     "add_on_trigger_r": 1.0,
-    "add_on_risk_fraction": 50.0,
+    "add_on_risk_fraction": 0.0,
     "max_spread": 0.20,
     "min_trade_interval": 3600,
     "max_trades_per_day": 3,
@@ -291,8 +291,8 @@ def main() -> None:
     except Exception:
         pass
 
-    st.title("BinanceUS Breakout Bot")
-    st.caption("Simple dashboard for paper trading and setup checks.")
+    st.title("BinanceUS ETH Context Bot")
+    st.caption("Paper-trading dashboard for the BTC-regime and ETH relative-strength strategy.")
     if st.button("Refresh", use_container_width=False):
         st.rerun()
 
@@ -317,19 +317,26 @@ def main() -> None:
         df = pd.DataFrame()
     if not df.empty:
         snapshot = bot.build_snapshot(df.iloc[:-1] if len(df) > 1 else df)
+        snapshot.update(bot.build_entry_context())
         state_open = bool(state.get("quantity", 0) > 0)
         entry_ok, reason = bot.should_enter_long(snapshot)
+        btc_regime = snapshot.get("regime_trend_up", True)
+        eth_vs_btc = snapshot.get("relative_strength_up", True)
         trend_up = snapshot["price"] > snapshot["fast_sma"] > snapshot["slow_sma"]
         rsi_strength = bot.RSI_ENTRY_MIN <= snapshot["rsi"] <= bot.RSI_ENTRY_MAX
         breakout = snapshot["price"] >= snapshot["breakout_level"] * (1 + bot.ENTRY_BUFFER_PCT)
+        volume_ready = snapshot["volume"] >= snapshot["volume_avg"] * bot.MIN_VOLUME_RATIO
+        atr_expand = (snapshot["atr"] / snapshot["atr_avg_range"]) >= bot.MIN_ATR_RATIO if snapshot["atr_avg_range"] > 0 else False
         add_on_ready = state_open and bool(state) and bot.should_add_on(snapshot, bot.PositionState(**state))[0]
 
         st.subheader("What The Bot Sees")
-        setup_cols = st.columns(4)
-        setup_cols[0].metric("Trend", "Up" if trend_up else "Blocked")
-        setup_cols[1].metric("RSI strength", "Ready" if rsi_strength else "Blocked", f"{snapshot['rsi']:.1f}")
-        setup_cols[2].metric("Breakout", "Ready" if breakout else "Waiting", f"{snapshot['breakout_level']:.2f}")
-        setup_cols[3].metric("Momentum", "Ready" if snapshot["macd_hist"] > 0 else "Blocked", f"{snapshot['macd_hist']:.4f}")
+        setup_cols = st.columns(6)
+        setup_cols[0].metric("BTC regime", "Ready" if btc_regime else "Blocked")
+        setup_cols[1].metric("ETH/BTC strength", "Ready" if eth_vs_btc else "Blocked")
+        setup_cols[2].metric("ETH trend", "Ready" if trend_up else "Blocked")
+        setup_cols[3].metric("RSI", "Ready" if rsi_strength else "Blocked", f"{snapshot['rsi']:.1f}")
+        setup_cols[4].metric("Breakout", "Ready" if breakout else "Waiting", f"{snapshot['breakout_level']:.2f}")
+        setup_cols[5].metric("Expansion", "Ready" if volume_ready and atr_expand else "Blocked")
 
         status_cols = st.columns(3)
         status_cols[0].metric("Entry setup", "Ready" if entry_ok and not state_open else "No")
@@ -345,6 +352,8 @@ def main() -> None:
                     "risk_per_trade_pct": get_setting("risk_per_trade"),
                     "max_position_fraction_pct": get_setting("max_position_fraction"),
                     "breakout_lookback": get_setting("breakout_lookback"),
+                    "btc_regime_symbol": getattr(bot, "REGIME_SYMBOL", "BTC/USDT"),
+                    "relative_strength_symbol": getattr(bot, "RELATIVE_STRENGTH_SYMBOL", "BTC/USDT"),
                     "winner_add_ons": get_setting("add_on_enabled"),
                     "saved_position": state,
                     "entry_reason": "position already open" if state_open else reason,
