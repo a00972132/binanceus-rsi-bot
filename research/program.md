@@ -4,7 +4,7 @@ This folder adapts the `autoresearch` methodology to the ETH bot.
 
 ## Goal
 
-Improve the offline strategy score without touching the live trading bot or the fixed evaluator.
+Improve the offline strategy score without touching the live trading bot once the research harness is set.
 
 ## In Scope
 
@@ -41,9 +41,9 @@ Do not modify these during normal experiment loops:
 
 - SMA window combinations
 - RSI entry and exit zones
-- stop distance and target multiple
-- entry buffer and min stop percentage
-- risk and max position fraction
+- breakout lookback and entry buffer
+- volume confirmation window and threshold
+- stop distance, risk, and max position fraction
 
 ## What Not To Do
 

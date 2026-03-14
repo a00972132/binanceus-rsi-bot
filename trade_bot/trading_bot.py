@@ -71,18 +71,22 @@ DIAGNOSTICS = os.getenv("BOT_DIAGNOSTICS", "false").lower() in {"1", "true", "ye
 FAST_SMA_PERIOD = int(os.getenv("BOT_FAST_SMA_PERIOD", "20"))
 SLOW_SMA_PERIOD = int(os.getenv("BOT_SLOW_SMA_PERIOD", "100"))
 RSI_PERIOD = int(os.getenv("BOT_RSI_PERIOD", "14"))
-RSI_ENTRY_MIN = float(os.getenv("BOT_RSI_ENTRY_MIN", "35"))
-RSI_ENTRY_MAX = float(os.getenv("BOT_RSI_ENTRY_MAX", "55"))
-RSI_EXIT_MIN = float(os.getenv("BOT_RSI_EXIT_MIN", "68"))
-RISK_PER_TRADE = float(os.getenv("BOT_RISK_PER_TRADE", "0.01"))
-MAX_POSITION_FRACTION = float(os.getenv("BOT_MAX_POSITION_FRACTION", "0.20"))
-STOP_ATR_MULT = float(os.getenv("BOT_STOP_ATR_MULT", "1.5"))
-TARGET_R_MULTIPLE = float(os.getenv("BOT_TARGET_R_MULTIPLE", "2.0"))
-ENTRY_BUFFER_PCT = float(os.getenv("BOT_ENTRY_BUFFER_PCT", "0.003"))
+RSI_ENTRY_MIN = float(os.getenv("BOT_RSI_ENTRY_MIN", "55"))
+RSI_ENTRY_MAX = float(os.getenv("BOT_RSI_ENTRY_MAX", "80"))
+RSI_EXIT_MIN = float(os.getenv("BOT_RSI_EXIT_MIN", "45"))
+RISK_PER_TRADE = float(os.getenv("BOT_RISK_PER_TRADE", "0.02"))
+MAX_POSITION_FRACTION = float(os.getenv("BOT_MAX_POSITION_FRACTION", "0.40"))
+STOP_ATR_MULT = float(os.getenv("BOT_STOP_ATR_MULT", "2.5"))
+ENTRY_BUFFER_PCT = float(os.getenv("BOT_ENTRY_BUFFER_PCT", "0.001"))
 MAX_SPREAD_PERCENT = float(os.getenv("BOT_MAX_SPREAD_PERCENT", "0.20"))
-MIN_STOP_PCT = float(os.getenv("BOT_MIN_STOP_PCT", "0.008"))
+MIN_STOP_PCT = float(os.getenv("BOT_MIN_STOP_PCT", "0.012"))
 MIN_TRADE_INTERVAL = int(os.getenv("BOT_MIN_TRADE_INTERVAL", "3600"))
 MAX_TRADES_PER_DAY = int(os.getenv("BOT_MAX_TRADES_PER_DAY", "3"))
+BREAKOUT_LOOKBACK = int(os.getenv("BOT_BREAKOUT_LOOKBACK", "20"))
+ADD_ON_ENABLED = os.getenv("BOT_ADD_ON_ENABLED", "true").lower() in {"1", "true", "yes", "y"}
+MAX_ADD_ONS = int(os.getenv("BOT_MAX_ADD_ONS", "1"))
+ADD_ON_TRIGGER_R = float(os.getenv("BOT_ADD_ON_TRIGGER_R", "1.0"))
+ADD_ON_RISK_FRACTION = float(os.getenv("BOT_ADD_ON_RISK_FRACTION", "0.50"))
 
 BASE_ASSET, QUOTE_ASSET = SYMBOL.split("/")
 
@@ -105,9 +109,11 @@ class PositionState:
     quantity: float = 0.0
     entry_price: float = 0.0
     stop_price: float = 0.0
-    target_price: float = 0.0
+    initial_stop_distance: float = 0.0
     peak_price: float = 0.0
     entered_at: float = 0.0
+    add_on_count: int = 0
+    next_add_on_price: float = 0.0
 
     def is_open(self) -> bool:
         return self.quantity > 0 and self.entry_price > 0
@@ -282,15 +288,35 @@ def compute_trade_size(balance: Dict[str, Any], price: float, stop_distance: flo
 def create_position_state(quantity: float, fill_price: float, atr_value: float) -> PositionState:
     stop_distance = max(atr_value * STOP_ATR_MULT, fill_price * MIN_STOP_PCT)
     stop_price = fill_price - stop_distance
-    target_price = fill_price + (stop_distance * TARGET_R_MULTIPLE)
     return PositionState(
         quantity=quantity,
         entry_price=fill_price,
         stop_price=stop_price,
-        target_price=target_price,
+        initial_stop_distance=stop_distance,
         peak_price=fill_price,
         entered_at=time.time(),
+        add_on_count=0,
+        next_add_on_price=fill_price + (stop_distance * ADD_ON_TRIGGER_R),
     )
+
+
+def update_position_state_on_add(
+    state: PositionState, add_quantity: float, fill_price: float, atr_value: float
+) -> PositionState:
+    total_quantity = state.quantity + add_quantity
+    if total_quantity <= 0:
+        return state
+    stop_distance = max(atr_value * STOP_ATR_MULT, fill_price * MIN_STOP_PCT)
+    state.entry_price = (
+        (state.entry_price * state.quantity) + (fill_price * add_quantity)
+    ) / total_quantity
+    state.quantity = total_quantity
+    state.stop_price = max(state.stop_price, fill_price - stop_distance)
+    state.initial_stop_distance = max(state.initial_stop_distance, stop_distance)
+    state.peak_price = max(state.peak_price, fill_price)
+    state.add_on_count += 1
+    state.next_add_on_price = fill_price + (stop_distance * ADD_ON_TRIGGER_R)
+    return state
 
 
 def extract_fill_price(order: Optional[Dict[str, Any]], fallback: float) -> float:
@@ -358,6 +384,8 @@ def build_snapshot(df: pd.DataFrame) -> Dict[str, float]:
     macd_hist = float(macd_line.iloc[-1] - signal_line.iloc[-1])
     prev_macd_hist = float(macd_line.iloc[-2] - signal_line.iloc[-2])
     close = float(df["close"].iloc[-1])
+    breakout_window = df["high"].iloc[:-1].tail(BREAKOUT_LOOKBACK)
+    breakout_level = float(breakout_window.max()) if not breakout_window.empty else close
     return {
         "price": close,
         "fast_sma": fast_sma,
@@ -366,22 +394,23 @@ def build_snapshot(df: pd.DataFrame) -> Dict[str, float]:
         "atr": atr,
         "macd_hist": macd_hist,
         "prev_macd_hist": prev_macd_hist,
+        "breakout_level": breakout_level,
     }
 
 
 def should_enter_long(snapshot: Dict[str, float]) -> Tuple[bool, str]:
     trend_up = snapshot["price"] > snapshot["fast_sma"] > snapshot["slow_sma"]
     in_rsi_zone = RSI_ENTRY_MIN <= snapshot["rsi"] <= RSI_ENTRY_MAX
-    near_fast_sma = snapshot["price"] <= snapshot["fast_sma"] * (1 + ENTRY_BUFFER_PCT)
+    breakout = snapshot["price"] >= snapshot["breakout_level"] * (1 + ENTRY_BUFFER_PCT)
     momentum_turning = snapshot["macd_hist"] > 0 and snapshot["macd_hist"] >= snapshot["prev_macd_hist"]
     checks = {
         "trend_up": trend_up,
-        "rsi_pullback": in_rsi_zone,
-        "near_fast_sma": near_fast_sma,
+        "rsi_strength": in_rsi_zone,
+        "breakout": breakout,
         "macd_turn": momentum_turning,
     }
     if all(checks.values()):
-        return True, "trend pullback entry"
+        return True, "breakout trend entry"
     if DIAGNOSTICS:
         logging.info("No entry: %s", checks)
     return False, ", ".join(key for key, value in checks.items() if not value)
@@ -389,19 +418,35 @@ def should_enter_long(snapshot: Dict[str, float]) -> Tuple[bool, str]:
 
 def should_exit_long(snapshot: Dict[str, float], state: PositionState) -> Tuple[bool, str]:
     price = snapshot["price"]
-    trend_failed = price < snapshot["fast_sma"] and snapshot["macd_hist"] < 0
-    target_hit = price >= state.target_price and snapshot["rsi"] >= RSI_EXIT_MIN
+    trend_failed = (
+        price < snapshot["slow_sma"]
+        and snapshot["macd_hist"] < 0
+        and snapshot["rsi"] <= RSI_EXIT_MIN
+    )
     stop_hit = price <= state.stop_price
-    trailing_stop = max(state.stop_price, state.peak_price - max(snapshot["atr"], state.entry_price * MIN_STOP_PCT))
+    trailing_stop = max(
+        state.stop_price,
+        state.peak_price - max(snapshot["atr"] * STOP_ATR_MULT, state.entry_price * MIN_STOP_PCT),
+    )
     trail_hit = price <= trailing_stop and price > state.entry_price
     if stop_hit:
         return True, "stop loss"
-    if target_hit:
-        return True, "target reached"
     if trail_hit:
-        return True, "profit protection"
-    if trend_failed and price > state.entry_price:
+        return True, "atr trailing stop"
+    if trend_failed:
         return True, "trend failure"
+    return False, ""
+
+
+def should_add_on(snapshot: Dict[str, float], state: PositionState) -> Tuple[bool, str]:
+    if not ADD_ON_ENABLED or not state.is_open():
+        return False, ""
+    if state.add_on_count >= MAX_ADD_ONS:
+        return False, ""
+    breakout_continuation = snapshot["price"] >= state.next_add_on_price
+    momentum_ok = snapshot["macd_hist"] > 0 and snapshot["rsi"] >= RSI_ENTRY_MIN
+    if breakout_continuation and momentum_ok:
+        return True, "winner add-on"
     return False, ""
 
 
@@ -420,7 +465,7 @@ def sync_state_with_balance(state: PositionState, balance: Dict[str, Any]) -> Po
 def run_bot() -> None:
     state = load_position_state()
     logging.info(
-        "Bot config | symbol=%s timeframe=%s paper=%s fast=%s slow=%s rsi-entry=[%.1f, %.1f] rsi-exit=%.1f",
+        "Bot config | symbol=%s timeframe=%s paper=%s fast=%s slow=%s rsi-entry=[%.1f, %.1f] breakout=%s stop_atr=%.1f add_on=%s",
         SYMBOL,
         TIMEFRAME,
         PAPER_TRADING,
@@ -428,7 +473,9 @@ def run_bot() -> None:
         SLOW_SMA_PERIOD,
         RSI_ENTRY_MIN,
         RSI_ENTRY_MAX,
-        RSI_EXIT_MIN,
+        BREAKOUT_LOOKBACK,
+        STOP_ATR_MULT,
+        ADD_ON_ENABLED,
     )
 
     while True:
@@ -463,6 +510,27 @@ def run_bot() -> None:
                         )
                         state = PositionState()
                         save_position_state(state)
+                else:
+                    add_on_now, add_reason = should_add_on(snapshot, state)
+                    if add_on_now and can_trade_now():
+                        stop_distance = max(snapshot["atr"] * STOP_ATR_MULT, snapshot["price"] * MIN_STOP_PCT)
+                        add_amount = compute_trade_size(balance, snapshot["price"], stop_distance) * ADD_ON_RISK_FRACTION
+                        add_amount = adjust_amount_for_market(add_amount, snapshot["price"])
+                        order = place_order("buy", add_amount, snapshot["price"], add_reason)
+                        if order:
+                            fill_price = extract_fill_price(order, snapshot["price"])
+                            fill_amount = extract_fill_amount(order, add_amount)
+                            state = update_position_state_on_add(state, fill_amount, fill_price, snapshot["atr"])
+                            save_position_state(state)
+                            logging.info(
+                                "Added long %.6f %s @ %.2f | avg %.2f | stop %.2f | add_count %s",
+                                fill_amount,
+                                BASE_ASSET,
+                                fill_price,
+                                state.entry_price,
+                                state.stop_price,
+                                state.add_on_count,
+                            )
             else:
                 enter_now, reason = should_enter_long(snapshot)
                 if enter_now and can_trade_now():
@@ -475,12 +543,12 @@ def run_bot() -> None:
                         state = create_position_state(fill_amount, fill_price, snapshot["atr"])
                         save_position_state(state)
                         logging.info(
-                            "Opened long %.6f %s @ %.2f | stop %.2f | target %.2f",
+                            "Opened long %.6f %s @ %.2f | stop %.2f | breakout %.2f",
                             fill_amount,
                             BASE_ASSET,
                             fill_price,
                             state.stop_price,
-                            state.target_price,
+                            snapshot["breakout_level"],
                         )
 
             save_position_state(state)

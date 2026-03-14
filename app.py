@@ -22,6 +22,28 @@ LOG_PATH = REPO_DIR / "logs" / "trading_bot.log"
 PID_PATH = REPO_DIR / "run" / "bot.pid"
 STATE_PATH = REPO_DIR / "run" / "position_state.json"
 TIMEFRAME_OPTIONS = ["15m", "30m", "1h", "4h", "1d"]
+DEFAULTS = {
+    "paper_trading": True,
+    "diagnostics": True,
+    "fast_sma": 20,
+    "slow_sma": 100,
+    "rsi_entry_min": 55,
+    "rsi_entry_max": 80,
+    "rsi_exit_min": 45,
+    "risk_per_trade": 2.0,
+    "max_position_fraction": 40.0,
+    "stop_atr_mult": 2.5,
+    "breakout_lookback": 20,
+    "add_on_enabled": True,
+    "max_add_ons": 1,
+    "add_on_trigger_r": 1.0,
+    "add_on_risk_fraction": 50.0,
+    "max_spread": 0.20,
+    "min_trade_interval": 3600,
+    "max_trades_per_day": 3,
+    "auto_refresh": True,
+    "refresh_sec": 5,
+}
 
 
 @st.cache_data(show_spinner=False, ttl=2)
@@ -104,33 +126,59 @@ def load_bot_module():
     return bot
 
 
+def get_setting(name: str):
+    return st.session_state.get(name, DEFAULTS[name])
+
+
 def render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timeframe: str) -> Dict[str, str]:
     with st.sidebar:
-        st.header("Bot")
+        st.header("Controls")
         symbol = st.text_input("Symbol", value=symbol)
         timeframe = st.selectbox(
             "Timeframe",
             TIMEFRAME_OPTIONS,
             index=TIMEFRAME_OPTIONS.index(timeframe) if timeframe in TIMEFRAME_OPTIONS else 2,
         )
-        paper = st.checkbox("Paper trading", value=bool(st.session_state.get("paper_trading", True)))
-        diagnostics = st.checkbox("Verbose logs", value=bool(st.session_state.get("diagnostics", False)))
+        paper = st.checkbox("Paper trading", value=bool(get_setting("paper_trading")))
+        diagnostics = st.checkbox("Show setup checks", value=bool(get_setting("diagnostics")))
+        auto_refresh = st.checkbox("Auto-refresh", value=bool(get_setting("auto_refresh")))
+        refresh_sec = st.slider("Refresh seconds", 2, 30, int(get_setting("refresh_sec")))
 
-        st.subheader("Strategy")
-        fast_sma = st.number_input("Fast SMA", min_value=10, max_value=200, value=int(st.session_state.get("fast_sma", 20)))
-        slow_sma = st.number_input("Slow SMA", min_value=50, max_value=400, value=int(st.session_state.get("slow_sma", 100)))
-        rsi_entry_min = st.slider("RSI entry min", 10, 70, int(st.session_state.get("rsi_entry_min", 35)))
-        rsi_entry_max = st.slider("RSI entry max", 20, 80, int(st.session_state.get("rsi_entry_max", 55)))
-        rsi_exit_min = st.slider("RSI exit min", 40, 90, int(st.session_state.get("rsi_exit_min", 68)))
-        risk_per_trade = st.slider("Risk per trade (%)", 0.25, 3.0, float(st.session_state.get("risk_per_trade", 1.0)), 0.25)
-        max_position_fraction = st.slider("Max position size (%)", 5.0, 50.0, float(st.session_state.get("max_position_fraction", 20.0)), 1.0)
-        stop_atr_mult = st.slider("ATR stop multiple", 1.0, 4.0, float(st.session_state.get("stop_atr_mult", 1.5)), 0.1)
-        target_r_multiple = st.slider("Target R multiple", 1.0, 4.0, float(st.session_state.get("target_r_multiple", 2.0)), 0.1)
-        max_spread = st.slider("Max spread (%)", 0.05, 0.50, float(st.session_state.get("max_spread", 0.20)), 0.01)
+        st.caption("Basic strategy")
+        risk_per_trade = st.slider("Risk per trade (%)", 0.5, 5.0, float(get_setting("risk_per_trade")), 0.25)
+        max_position_fraction = st.slider("Max position size (%)", 10.0, 80.0, float(get_setting("max_position_fraction")), 1.0)
+        breakout_lookback = st.slider("Breakout lookback", 5, 60, int(get_setting("breakout_lookback")))
+        add_on_enabled = st.checkbox("Allow winner add-ons", value=bool(get_setting("add_on_enabled")))
 
-        st.subheader("Execution")
-        min_trade_interval = st.slider("Loop interval (sec)", 300, 7200, int(st.session_state.get("min_trade_interval", 3600)), 300)
-        max_trades_per_day = st.slider("Max trades per day", 1, 10, int(st.session_state.get("max_trades_per_day", 3)))
+        with st.expander("Advanced settings"):
+            fast_sma = st.number_input("Fast SMA", min_value=10, max_value=200, value=int(get_setting("fast_sma")))
+            slow_sma = st.number_input("Slow SMA", min_value=50, max_value=400, value=int(get_setting("slow_sma")))
+            rsi_entry_min = st.slider("RSI strength min", 30, 80, int(get_setting("rsi_entry_min")))
+            rsi_entry_max = st.slider("RSI strength max", 40, 90, int(get_setting("rsi_entry_max")))
+            rsi_exit_min = st.slider("Trend-failure RSI", 20, 70, int(get_setting("rsi_exit_min")))
+            stop_atr_mult = st.slider("ATR trail multiple", 1.0, 5.0, float(get_setting("stop_atr_mult")), 0.1)
+            max_add_ons = st.slider("Max add-ons", 0, 3, int(get_setting("max_add_ons")))
+            add_on_trigger_r = st.slider("Add-on trigger (R)", 0.5, 3.0, float(get_setting("add_on_trigger_r")), 0.25)
+            add_on_risk_fraction = st.slider(
+                "Add-on size (% of base risk)", 10.0, 100.0, float(get_setting("add_on_risk_fraction")), 5.0
+            )
+            max_spread = st.slider("Max spread (%)", 0.05, 0.50, float(get_setting("max_spread")), 0.01)
+            min_trade_interval = st.slider("Loop interval (sec)", 300, 7200, int(get_setting("min_trade_interval")), 300)
+            max_trades_per_day = st.slider("Max trades per day", 1, 10, int(get_setting("max_trades_per_day")))
+
+        if "fast_sma" not in st.session_state:
+            fast_sma = DEFAULTS["fast_sma"]
+            slow_sma = DEFAULTS["slow_sma"]
+            rsi_entry_min = DEFAULTS["rsi_entry_min"]
+            rsi_entry_max = DEFAULTS["rsi_entry_max"]
+            rsi_exit_min = DEFAULTS["rsi_exit_min"]
+            stop_atr_mult = DEFAULTS["stop_atr_mult"]
+            max_add_ons = DEFAULTS["max_add_ons"]
+            add_on_trigger_r = DEFAULTS["add_on_trigger_r"]
+            add_on_risk_fraction = DEFAULTS["add_on_risk_fraction"]
+            max_spread = DEFAULTS["max_spread"]
+            min_trade_interval = DEFAULTS["min_trade_interval"]
+            max_trades_per_day = DEFAULTS["max_trades_per_day"]
 
         st.session_state.update(
             {
@@ -144,10 +192,16 @@ def render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timeframe
                 "risk_per_trade": risk_per_trade,
                 "max_position_fraction": max_position_fraction,
                 "stop_atr_mult": stop_atr_mult,
-                "target_r_multiple": target_r_multiple,
+                "breakout_lookback": breakout_lookback,
+                "add_on_enabled": add_on_enabled,
+                "max_add_ons": max_add_ons,
+                "add_on_trigger_r": add_on_trigger_r,
+                "add_on_risk_fraction": add_on_risk_fraction,
                 "max_spread": max_spread,
                 "min_trade_interval": min_trade_interval,
                 "max_trades_per_day": max_trades_per_day,
+                "auto_refresh": auto_refresh,
+                "refresh_sec": refresh_sec,
             }
         )
 
@@ -168,7 +222,11 @@ def render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timeframe
                         "BOT_RISK_PER_TRADE": risk_per_trade / 100.0,
                         "BOT_MAX_POSITION_FRACTION": max_position_fraction / 100.0,
                         "BOT_STOP_ATR_MULT": stop_atr_mult,
-                        "BOT_TARGET_R_MULTIPLE": target_r_multiple,
+                        "BOT_BREAKOUT_LOOKBACK": breakout_lookback,
+                        "BOT_ADD_ON_ENABLED": "true" if add_on_enabled else "false",
+                        "BOT_MAX_ADD_ONS": max_add_ons,
+                        "BOT_ADD_ON_TRIGGER_R": add_on_trigger_r,
+                        "BOT_ADD_ON_RISK_FRACTION": add_on_risk_fraction / 100.0,
                         "BOT_MAX_SPREAD_PERCENT": max_spread,
                         "BOT_MIN_TRADE_INTERVAL": min_trade_interval,
                         "BOT_MAX_TRADES_PER_DAY": max_trades_per_day,
@@ -182,11 +240,6 @@ def render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timeframe
                 stop_bot(pid)
                 st.session_state["bot_pid"] = None
                 st.rerun()
-
-        refresh_enabled = st.checkbox("Auto-refresh", value=bool(st.session_state.get("auto_refresh", True)))
-        refresh_sec = st.slider("Refresh seconds", 2, 30, int(st.session_state.get("refresh_sec", 5)))
-        st.session_state["auto_refresh"] = refresh_enabled
-        st.session_state["refresh_sec"] = refresh_sec
 
     return {"symbol": symbol, "timeframe": timeframe}
 
@@ -231,7 +284,7 @@ def render_chart(df: pd.DataFrame, bot) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="BinanceUS RSI Bot", layout="wide")
+    st.set_page_config(page_title="BinanceUS Breakout Bot", layout="wide")
     pid = st.session_state.get("bot_pid") or read_pid()
     pid_running = is_running(pid)
     if pid_running and pid:
@@ -252,8 +305,11 @@ def main() -> None:
     except Exception:
         pass
 
-    st.title("BinanceUS RSI Bot")
-    st.caption(f"Status: {'Running' if pid_running else 'Stopped'}{f' (PID {pid})' if pid_running and pid else ''}")
+    st.title("BinanceUS Breakout Bot")
+    st.caption("Simple dashboard for paper trading and setup checks.")
+
+    summary_cols = st.columns([1.2, 1, 1, 1])
+    summary_cols[0].metric("Bot status", "Running" if pid_running else "Stopped", f"PID {pid}" if pid_running and pid else None)
 
     price = bot.fetch_ticker_price()
     balance = bot.fetch_balance() or {}
@@ -262,35 +318,50 @@ def main() -> None:
     equity = quote_total + (base_total * price)
     state = read_state()
 
-    metrics = st.columns(4)
-    metrics[0].metric(selected["symbol"], f"${price:,.2f}" if price else "-")
-    metrics[1].metric(f"{bot.QUOTE_ASSET} Total", f"${quote_total:,.2f}")
-    metrics[2].metric(f"{bot.BASE_ASSET} Total", f"{base_total:,.6f}")
-    metrics[3].metric("Equity", f"${equity:,.2f}" if equity else "-")
+    summary_cols[1].metric(selected["symbol"], f"${price:,.2f}" if price else "-")
+    summary_cols[2].metric("Account equity", f"${equity:,.2f}" if equity else "-")
+    state = read_state()
+    position_qty = float(state.get("quantity", 0.0))
+    summary_cols[3].metric("Position", f"{position_qty:.6f} {bot.BASE_ASSET}" if position_qty else "Flat")
 
     df = bot.fetch_data()
     if df is None:
         df = pd.DataFrame()
     if not df.empty:
         snapshot = bot.build_snapshot(df.iloc[:-1] if len(df) > 1 else df)
-        info_cols = st.columns(4)
-        info_cols[0].metric("Fast / Slow SMA", f"{snapshot['fast_sma']:.2f} / {snapshot['slow_sma']:.2f}")
-        info_cols[1].metric("RSI", f"{snapshot['rsi']:.2f}")
-        info_cols[2].metric("ATR", f"{snapshot['atr']:.2f}")
-        info_cols[3].metric("MACD Hist", f"{snapshot['macd_hist']:.4f}")
-
         state_open = bool(state.get("quantity", 0) > 0)
         entry_ok, reason = bot.should_enter_long(snapshot)
-        st.subheader("Strategy State")
-        st.write(
-            {
-                "trend_up": snapshot["price"] > snapshot["fast_sma"] > snapshot["slow_sma"],
-                "entry_ready": entry_ok and not state_open,
-                "entry_reason": "position already open" if state_open else reason,
-                "position_open": state_open,
-                "saved_position": state,
-            }
-        )
+        trend_up = snapshot["price"] > snapshot["fast_sma"] > snapshot["slow_sma"]
+        rsi_strength = bot.RSI_ENTRY_MIN <= snapshot["rsi"] <= bot.RSI_ENTRY_MAX
+        breakout = snapshot["price"] >= snapshot["breakout_level"] * (1 + bot.ENTRY_BUFFER_PCT)
+        add_on_ready = state_open and bool(state) and bot.should_add_on(snapshot, bot.PositionState(**state))[0]
+
+        st.subheader("What The Bot Sees")
+        setup_cols = st.columns(4)
+        setup_cols[0].metric("Trend", "Up" if trend_up else "Blocked")
+        setup_cols[1].metric("RSI strength", "Ready" if rsi_strength else "Blocked", f"{snapshot['rsi']:.1f}")
+        setup_cols[2].metric("Breakout", "Ready" if breakout else "Waiting", f"{snapshot['breakout_level']:.2f}")
+        setup_cols[3].metric("Momentum", "Ready" if snapshot["macd_hist"] > 0 else "Blocked", f"{snapshot['macd_hist']:.4f}")
+
+        status_cols = st.columns(3)
+        status_cols[0].metric("Entry setup", "Ready" if entry_ok and not state_open else "No")
+        status_cols[1].metric("Add-on setup", "Ready" if add_on_ready else "No")
+        status_cols[2].metric("Position state", "Open" if state_open else "Flat")
+
+        with st.expander("Current settings"):
+            st.json(
+                {
+                    "symbol": selected["symbol"],
+                    "timeframe": selected["timeframe"],
+                    "paper_trading": get_setting("paper_trading"),
+                    "risk_per_trade_pct": get_setting("risk_per_trade"),
+                    "max_position_fraction_pct": get_setting("max_position_fraction"),
+                    "breakout_lookback": get_setting("breakout_lookback"),
+                    "winner_add_ons": get_setting("add_on_enabled"),
+                    "saved_position": state,
+                    "entry_reason": "position already open" if state_open else reason,
+                }
+            )
         render_chart(df, bot)
     else:
         st.info("Market data unavailable.")

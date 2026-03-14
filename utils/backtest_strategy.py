@@ -23,9 +23,15 @@ class Config:
     risk_per_trade: float
     max_position_fraction: float
     stop_atr_mult: float
-    target_r_multiple: float
     entry_buffer_pct: float
     min_stop_pct: float
+    breakout_lookback: int
+    volume_window: int
+    min_volume_ratio: float
+    add_on_enabled: bool
+    max_add_ons: int
+    add_on_trigger_r: float
+    add_on_risk_fraction: float
 
 
 def timeframe_to_ms(tf: str) -> int:
@@ -124,6 +130,10 @@ def build_snapshot(df: pd.DataFrame, cfg: Config) -> Dict[str, float]:
     macd_hist = float(macd_line.iloc[-1] - signal_line.iloc[-1])
     prev_macd_hist = float(macd_line.iloc[-2] - signal_line.iloc[-2])
     price = float(df["close"].iloc[-1])
+    breakout_window = df["high"].iloc[:-1].tail(cfg.breakout_lookback)
+    breakout_level = float(breakout_window.max()) if not breakout_window.empty else price
+    volume_avg = float(df["volume"].rolling(window=cfg.volume_window).mean().iloc[-1])
+    current_volume = float(df["volume"].iloc[-1])
     return {
         "price": price,
         "fast_sma": fast_sma,
@@ -132,24 +142,31 @@ def build_snapshot(df: pd.DataFrame, cfg: Config) -> Dict[str, float]:
         "atr": atr,
         "macd_hist": macd_hist,
         "prev_macd_hist": prev_macd_hist,
+        "breakout_level": breakout_level,
+        "volume": current_volume,
+        "volume_avg": volume_avg,
     }
 
 
 def should_enter_long(snapshot: Dict[str, float], cfg: Config) -> bool:
     trend_up = snapshot["price"] > snapshot["fast_sma"] > snapshot["slow_sma"]
     in_rsi_zone = cfg.rsi_entry_min <= snapshot["rsi"] <= cfg.rsi_entry_max
-    near_fast_sma = snapshot["price"] <= snapshot["fast_sma"] * (1 + cfg.entry_buffer_pct)
+    breakout = snapshot["price"] >= snapshot["breakout_level"] * (1 + cfg.entry_buffer_pct)
     momentum_turning = snapshot["macd_hist"] > 0 and snapshot["macd_hist"] >= snapshot["prev_macd_hist"]
-    return trend_up and in_rsi_zone and near_fast_sma and momentum_turning
+    volume_confirmed = snapshot["volume"] >= snapshot["volume_avg"] * cfg.min_volume_ratio
+    return trend_up and in_rsi_zone and breakout and momentum_turning and volume_confirmed
 
 
-def should_exit_long(snapshot: Dict[str, float], entry_price: float, stop_price: float, target_price: float, peak_price: float, cfg: Config) -> bool:
-    trend_failed = snapshot["price"] < snapshot["fast_sma"] and snapshot["macd_hist"] < 0
-    target_hit = snapshot["price"] >= target_price and snapshot["rsi"] >= cfg.rsi_exit_min
+def should_exit_long(snapshot: Dict[str, float], entry_price: float, stop_price: float, peak_price: float, cfg: Config) -> bool:
+    trend_failed = (
+        snapshot["price"] < snapshot["slow_sma"]
+        and snapshot["macd_hist"] < 0
+        and snapshot["rsi"] <= cfg.rsi_exit_min
+    )
     stop_hit = snapshot["price"] <= stop_price
-    trailing_stop = max(stop_price, peak_price - max(snapshot["atr"], entry_price * cfg.min_stop_pct))
+    trailing_stop = max(stop_price, peak_price - max(snapshot["atr"] * cfg.stop_atr_mult, entry_price * cfg.min_stop_pct))
     trail_hit = snapshot["price"] <= trailing_stop and snapshot["price"] > entry_price
-    return stop_hit or target_hit or trail_hit or (trend_failed and snapshot["price"] > entry_price)
+    return stop_hit or trail_hit or trend_failed
 
 
 def apply_cost(price: float, side: str, fee_bps: float, slippage_bps: float) -> float:
@@ -163,8 +180,9 @@ def run_backtest(df: pd.DataFrame, cfg: Config) -> Dict[str, float]:
     quantity = 0.0
     entry_price = 0.0
     stop_price = 0.0
-    target_price = 0.0
     peak_price = 0.0
+    add_on_count = 0
+    next_add_on_price = 0.0
     equity_curve: List[float] = []
     trade_returns: List[float] = []
 
@@ -178,15 +196,35 @@ def run_backtest(df: pd.DataFrame, cfg: Config) -> Dict[str, float]:
 
         if quantity > 0:
             peak_price = max(peak_price, snapshot["price"])
-            if should_exit_long(snapshot, entry_price, stop_price, target_price, peak_price, cfg):
+            if should_exit_long(snapshot, entry_price, stop_price, peak_price, cfg):
                 exit_price = apply_cost(next_open, "sell", cfg.fee_bps, cfg.slippage_bps)
                 cash += quantity * exit_price
                 trade_returns.append((exit_price - entry_price) / entry_price)
                 quantity = 0.0
                 entry_price = 0.0
                 stop_price = 0.0
-                target_price = 0.0
                 peak_price = 0.0
+                add_on_count = 0
+                next_add_on_price = 0.0
+            elif cfg.add_on_enabled and add_on_count < cfg.max_add_ons:
+                breakout_continuation = snapshot["price"] >= next_add_on_price
+                momentum_ok = snapshot["macd_hist"] > 0 and snapshot["rsi"] >= cfg.rsi_entry_min
+                if breakout_continuation and momentum_ok:
+                    stop_distance = max(snapshot["atr"] * cfg.stop_atr_mult, snapshot["price"] * cfg.min_stop_pct)
+                    risk_budget = equity * cfg.risk_per_trade * cfg.add_on_risk_fraction
+                    risk_size = risk_budget / stop_distance
+                    cap_size = (equity * cfg.max_position_fraction) / snapshot["price"]
+                    cash_size = cash / snapshot["price"]
+                    add_quantity = min(risk_size, max(cap_size - quantity, 0.0), cash_size)
+                    if add_quantity > 0:
+                        buy_price = apply_cost(next_open, "buy", cfg.fee_bps, cfg.slippage_bps)
+                        cash -= add_quantity * buy_price
+                        entry_price = ((entry_price * quantity) + (buy_price * add_quantity)) / (quantity + add_quantity)
+                        quantity += add_quantity
+                        stop_price = max(stop_price, buy_price - stop_distance)
+                        peak_price = max(peak_price, buy_price)
+                        add_on_count += 1
+                        next_add_on_price = buy_price + (stop_distance * cfg.add_on_trigger_r)
             continue
 
         if should_enter_long(snapshot, cfg):
@@ -203,8 +241,9 @@ def run_backtest(df: pd.DataFrame, cfg: Config) -> Dict[str, float]:
             cash -= quantity * buy_price
             entry_price = buy_price
             stop_price = buy_price - stop_distance
-            target_price = buy_price + (stop_distance * cfg.target_r_multiple)
             peak_price = buy_price
+            add_on_count = 0
+            next_add_on_price = buy_price + (stop_distance * cfg.add_on_trigger_r)
 
     final_equity = cash + (quantity * float(df["close"].iloc[-1]))
     equity_series = pd.Series(equity_curve)
@@ -233,15 +272,22 @@ def parse_args() -> Config:
     parser.add_argument("--fast-sma-period", type=int, default=20)
     parser.add_argument("--slow-sma-period", type=int, default=100)
     parser.add_argument("--rsi-period", type=int, default=14)
-    parser.add_argument("--rsi-entry-min", type=float, default=35.0)
-    parser.add_argument("--rsi-entry-max", type=float, default=55.0)
-    parser.add_argument("--rsi-exit-min", type=float, default=68.0)
-    parser.add_argument("--risk-per-trade", type=float, default=0.01)
-    parser.add_argument("--max-position-fraction", type=float, default=0.20)
-    parser.add_argument("--stop-atr-mult", type=float, default=1.5)
-    parser.add_argument("--target-r-multiple", type=float, default=2.0)
-    parser.add_argument("--entry-buffer-pct", type=float, default=0.003)
-    parser.add_argument("--min-stop-pct", type=float, default=0.008)
+    parser.add_argument("--rsi-entry-min", type=float, default=55.0)
+    parser.add_argument("--rsi-entry-max", type=float, default=80.0)
+    parser.add_argument("--rsi-exit-min", type=float, default=45.0)
+    parser.add_argument("--risk-per-trade", type=float, default=0.02)
+    parser.add_argument("--max-position-fraction", type=float, default=0.40)
+    parser.add_argument("--stop-atr-mult", type=float, default=2.5)
+    parser.add_argument("--entry-buffer-pct", type=float, default=0.001)
+    parser.add_argument("--min-stop-pct", type=float, default=0.012)
+    parser.add_argument("--breakout-lookback", type=int, default=20)
+    parser.add_argument("--volume-window", type=int, default=20)
+    parser.add_argument("--min-volume-ratio", type=float, default=1.25)
+    parser.add_argument("--add-on-enabled", action="store_true", default=True)
+    parser.add_argument("--no-add-on", dest="add_on_enabled", action="store_false")
+    parser.add_argument("--max-add-ons", type=int, default=1)
+    parser.add_argument("--add-on-trigger-r", type=float, default=1.0)
+    parser.add_argument("--add-on-risk-fraction", type=float, default=0.50)
     args = parser.parse_args()
     return Config(
         symbol=args.symbol,
@@ -259,9 +305,15 @@ def parse_args() -> Config:
         risk_per_trade=args.risk_per_trade,
         max_position_fraction=args.max_position_fraction,
         stop_atr_mult=args.stop_atr_mult,
-        target_r_multiple=args.target_r_multiple,
         entry_buffer_pct=args.entry_buffer_pct,
         min_stop_pct=args.min_stop_pct,
+        breakout_lookback=args.breakout_lookback,
+        volume_window=args.volume_window,
+        min_volume_ratio=args.min_volume_ratio,
+        add_on_enabled=args.add_on_enabled,
+        max_add_ons=args.max_add_ons,
+        add_on_trigger_r=args.add_on_trigger_r,
+        add_on_risk_fraction=args.add_on_risk_fraction,
     )
 
 

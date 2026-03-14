@@ -1,14 +1,14 @@
-# BinanceUS Trend Pullback Bot
+# BinanceUS Breakout Bot
 
-This repo now contains a smaller long-only trading bot and a matching backtest.
+This repo now contains a smaller long-only breakout bot and a matching backtest.
 
 The strategy is intentionally simple:
 - Only trade in an uptrend: price > fast SMA > slow SMA
-- Enter on a pullback: RSI returns to a defined zone near the fast SMA
-- Require momentum to turn back up: MACD histogram positive and improving
-- Risk a fixed fraction of equity per trade
-- Hold one position at a time
-- Exit on stop loss, target, profit protection, or trend failure
+- Enter on strength: RSI stays in a momentum zone and price breaks above the recent high
+- Require momentum confirmation: MACD histogram positive and improving
+- Risk a larger fixed fraction of equity per trade
+- Allow a limited add-on into winning trades
+- Exit on stop loss, ATR trailing stop, or trend failure
 
 ## Quick Start
 
@@ -45,7 +45,11 @@ The strategy is intentionally simple:
 - `BOT_RISK_PER_TRADE`
 - `BOT_MAX_POSITION_FRACTION`
 - `BOT_STOP_ATR_MULT`
-- `BOT_TARGET_R_MULTIPLE`
+- `BOT_BREAKOUT_LOOKBACK`
+- `BOT_ADD_ON_ENABLED`
+- `BOT_MAX_ADD_ONS`
+- `BOT_ADD_ON_TRIGGER_R`
+- `BOT_ADD_ON_RISK_FRACTION`
 - `BOT_MAX_SPREAD_PERCENT`
 - `BOT_MIN_TRADE_INTERVAL`
 - `BOT_MAX_TRADES_PER_DAY`
@@ -57,7 +61,7 @@ The strategy is intentionally simple:
 - Or customize:
   - `.venv/bin/python utils/backtest_strategy.py --symbol ETH/USDT --timeframe 1h --days 120`
 
-The backtest uses public Binance US candles and the same simplified strategy logic as the live bot.
+The backtest uses public Binance US candles and the same breakout/trailing logic as the live bot.
 
 ## Research Loop
 
