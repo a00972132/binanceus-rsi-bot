@@ -10,11 +10,6 @@ from typing import Dict, Optional
 import pandas as pd
 import streamlit as st
 
-try:
-    from streamlit_autorefresh import st_autorefresh  # type: ignore
-except Exception:  # pragma: no cover
-    st_autorefresh = None
-
 
 REPO_DIR = Path(__file__).parent
 BOT_MODULE_PATH = REPO_DIR / "trade_bot" / "trading_bot.py"
@@ -41,8 +36,6 @@ DEFAULTS = {
     "max_spread": 0.20,
     "min_trade_interval": 3600,
     "max_trades_per_day": 3,
-    "auto_refresh": True,
-    "refresh_sec": 5,
 }
 
 
@@ -141,8 +134,7 @@ def render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timeframe
         )
         paper = st.checkbox("Paper trading", value=bool(get_setting("paper_trading")))
         diagnostics = st.checkbox("Show setup checks", value=bool(get_setting("diagnostics")))
-        auto_refresh = st.checkbox("Auto-refresh", value=bool(get_setting("auto_refresh")))
-        refresh_sec = st.slider("Refresh seconds", 2, 30, int(get_setting("refresh_sec")))
+        st.caption("Dashboard refresh is manual to avoid Streamlit component issues.")
 
         st.caption("Basic strategy")
         risk_per_trade = st.slider("Risk per trade (%)", 0.5, 5.0, float(get_setting("risk_per_trade")), 0.25)
@@ -200,8 +192,6 @@ def render_sidebar(pid_running: bool, pid: Optional[int], symbol: str, timeframe
                 "max_spread": max_spread,
                 "min_trade_interval": min_trade_interval,
                 "max_trades_per_day": max_trades_per_day,
-                "auto_refresh": auto_refresh,
-                "refresh_sec": refresh_sec,
             }
         )
 
@@ -290,10 +280,6 @@ def main() -> None:
     if pid_running and pid:
         st.session_state["bot_pid"] = pid
 
-    if st.session_state.get("auto_refresh", True):
-        if st_autorefresh:
-            st_autorefresh(interval=int(st.session_state.get("refresh_sec", 5) * 1000), key="refresh")
-
     bot = load_bot_module()
     symbol = st.session_state.get("symbol", getattr(bot, "SYMBOL", "ETH/USDT"))
     timeframe = st.session_state.get("timeframe", getattr(bot, "TIMEFRAME", "1h"))
@@ -307,6 +293,8 @@ def main() -> None:
 
     st.title("BinanceUS Breakout Bot")
     st.caption("Simple dashboard for paper trading and setup checks.")
+    if st.button("Refresh", use_container_width=False):
+        st.rerun()
 
     summary_cols = st.columns([1.2, 1, 1, 1])
     summary_cols[0].metric("Bot status", "Running" if pid_running else "Stopped", f"PID {pid}" if pid_running and pid else None)
