@@ -55,9 +55,23 @@ The strategy is intentionally simple:
 - Run:
   - `make backtest`
 - Or customize:
-  - `.venv/bin/python utils/backtest_strategy.py --symbol ETH/USDT --timeframe 15m --days 120`
+  - `.venv/bin/python utils/backtest_strategy.py --symbol ETH/USDT --timeframe 1h --days 120`
 
 The backtest uses public Binance US candles and the same simplified strategy logic as the live bot.
+
+## Research Loop
+
+- Offline strategy research lives under `research/`
+- Mutable candidate:
+  - `research/candidate_strategy.py`
+- Fixed evaluator:
+  - `research/evaluator.py`
+- Run one research evaluation:
+  - `make research-eval`
+  - or `.venv/bin/python -m research.run_experiment --tag test`
+- Results are written to `research/results/latest.json` and `research/results/results.tsv`
+
+This borrows the core autoresearch idea safely: the agent can iterate on a small strategy surface while evaluation stays fixed and the live bot stays isolated.
 
 ## Project Structure
 

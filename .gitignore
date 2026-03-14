@@ -21,6 +21,7 @@ __pycache__/
 # App logs / pids
 logs/
 run/
+research/results/
 .streamlit-app.log
 .streamlit-app.pid
 trading_bot.log

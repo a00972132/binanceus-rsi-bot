@@ -2,7 +2,7 @@ PY=.venv/bin/python
 PIP=.venv/bin/pip
 STREAMLIT=.venv/bin/streamlit
 
-.PHONY: venv install run start stop logs bot-start bot-stop bot-logs backtest clean clean-logs clean-pids clean-caches dev-setup fmt lint check
+.PHONY: venv install run start stop logs bot-start bot-stop bot-logs backtest research-eval clean clean-logs clean-pids clean-caches dev-setup fmt lint check
 
 venv:
 	python3 -m venv .venv
@@ -57,6 +57,9 @@ bot-logs:
 
 backtest: prepare
 	. .venv/bin/activate && $(PY) utils/backtest_strategy.py
+
+research-eval: prepare
+	. .venv/bin/activate && $(PY) -m research.run_experiment --tag manual
 
 # Cleanup helpers
 clean-logs:
