@@ -299,7 +299,10 @@ def main() -> None:
     summary_cols = st.columns([1.2, 1, 1, 1])
     summary_cols[0].metric("Bot status", "Running" if pid_running else "Stopped", f"PID {pid}" if pid_running and pid else None)
 
-    price = bot.fetch_ticker_price()
+    df = bot.fetch_data()
+    if df is None:
+        df = pd.DataFrame()
+    price = float(df["close"].iloc[-1]) if not df.empty else bot.fetch_ticker_price()
     balance = bot.fetch_balance() or {}
     quote_total = float((balance.get("total") or {}).get(bot.QUOTE_ASSET, 0.0))
     base_total = float((balance.get("total") or {}).get(bot.BASE_ASSET, 0.0))
@@ -312,9 +315,6 @@ def main() -> None:
     position_qty = float(state.get("quantity", 0.0))
     summary_cols[3].metric("Position", f"{position_qty:.6f} {bot.BASE_ASSET}" if position_qty else "Flat")
 
-    df = bot.fetch_data()
-    if df is None:
-        df = pd.DataFrame()
     if not df.empty:
         snapshot = bot.build_snapshot(df.iloc[:-1] if len(df) > 1 else df)
         snapshot.update(bot.build_entry_context())

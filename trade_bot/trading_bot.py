@@ -531,9 +531,11 @@ def should_add_on(snapshot: Dict[str, float], state: PositionState) -> Tuple[boo
 
 
 def sync_state_with_balance(state: PositionState, balance: Dict[str, Any]) -> PositionState:
+    if PAPER_TRADING:
+        return state
     free_base = float((balance.get("free") or {}).get(BASE_ASSET, 0.0))
     if not state.is_open():
-        return PositionState()
+        return state
     if free_base <= 0:
         logging.warning("Tracked position cleared because free %s is zero", BASE_ASSET)
         return PositionState()
